@@ -549,6 +549,9 @@ pub fn js_of(settings: &Value) -> JsRuntimeOptions {
             .collect()
     };
 
+    // 界面**不再暴露**这个开关（官方 exe 自带组件，实测它只会让一次探测多花 40 秒），
+    // 但保留读取：需要的人可以在 config.json 里写 `"jsRemoteComponents": true`。
+    // 它不在 `default_settings` 里，所以设置页不会因此多出一个勾选框。
     let remote = settings
         .get("jsRemoteComponents")
         .and_then(|v| v.as_bool())

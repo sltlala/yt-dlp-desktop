@@ -59,9 +59,9 @@ fn default_settings() -> Value {
         "filenameTemplate": "%(title).150B [%(id)s].%(ext)s",
         // JS 运行时：留空表示自动检测。**不是可选优化**——
         // 不给的话 YouTube 会返回「需要重载页面」或只给 storyboard。
-        "jsRuntime": "",
-        // --remote-components 一般不需要（官方 exe 自带），且实测慢 40 秒
-        "jsRemoteComponents": false
+        // 注意这里**没有** `jsRemoteComponents`：界面上已经不提供那个开关，
+        // 但 `runner::js_of` 仍然读它，好让需要的人改 config.json 打开。
+        "jsRuntime": ""
     })
 }
 
@@ -941,13 +941,23 @@ mod tests {
     /// 这个测试锁住「缺失键必须被补齐」。
     #[test]
     fn merge_defaults_fills_missing_keys() {
-        let defaults = json!({ "a": "", "jsRuntime": "", "jsRemoteComponents": false });
+        let defaults = json!({ "a": "", "jsRuntime": "" });
         let stored = json!({ "a": "keep" });
         let merged = merge_defaults(defaults, stored);
 
         assert_eq!(merged["a"], json!("keep"));
         assert_eq!(merged["jsRuntime"], json!(""));
-        assert_eq!(merged["jsRemoteComponents"], json!(false));
+    }
+
+    /// 界面不再暴露 `jsRemoteComponents`，但它**仍是从 config.json 可开的逃生门**：
+    /// 一旦它回到 `default_settings`，设置页就会重新显示一个没人改的勾选框。
+    #[test]
+    fn remote_components_is_not_a_default_setting() {
+        let s = normalize_settings(json!({}));
+        assert!(s.get("jsRemoteComponents").is_none(), "实际: {s}");
+        // 手工写进去的值必须被保留，否则逃生门形同虚设。
+        let s = normalize_settings(json!({ "jsRemoteComponents": true }));
+        assert_eq!(s["jsRemoteComponents"], json!(true));
     }
 
     #[test]

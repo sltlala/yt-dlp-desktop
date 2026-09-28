@@ -215,8 +215,6 @@ export interface Settings {
    * n-sig 挑战需要它——不给就会返回「需要重载页面」或只给 storyboard。
    */
   jsRuntime: string
-  /** 附加 `--remote-components ejs:npm`。官方 exe 一般不需要，且实测会慢 40 秒。 */
-  jsRemoteComponents: boolean
 }
 
 /** JS 运行时检测结果。 */

@@ -513,9 +513,20 @@ YouTube 的 n-sig / player 挑战要用 JS 解。`--no-js-runtimes` 的帮助文
 探测 `node / deno / bun / quickjs`，`runner::js_of()` 统一给探测与下载两处取值。
 设置为空即自动检测——用户不该为了一个「不给就下不了」的必需参数去手工配置。
 
-**`--remote-components ejs:npm` 默认关闭**：官方可执行文件自带组件，
-帮助文本写着 "currently not needed if you are using an official executable"，
-而实测要多花 40 秒。设置页保留为可选开关。
+设置页只留三样：**候选运行时状态条**（哪个装了、路径是什么，纯诊断）、
+**「指定运行时」输入框**（留空即自动检测，给极少数要手工指定的人）、
+以及上面那段说明。原先还有两样，都已删掉：
+
+| 删掉的 | 为什么 |
+|---|---|
+| **「当前生效：node」那行** | 纯冗余。输入框为空时占位符就是检测结果，非空时输入框本身就是生效值；状态条另有 ✓ 标记 |
+| **「附加 `--remote-components ejs:npm`」勾选框** | 官方 exe 自带组件（帮助文本写明 "currently not needed if you are using an official executable"），勾上只多花 40 秒。没有理由让它在界面上占一格 |
+
+**`--remote-components ejs:npm` 的逃生门**：后端 `js_of()` **仍然读**
+`jsRemoteComponents`，只是它不在 `default_settings()` 里，所以设置页不会再出现
+那个勾选框。真遇到「官方组件失效」的情况，改 `config.json` 写
+`"jsRemoteComponents": true` 即可（`merge_defaults` 只补键不删键，
+前端 `deepClone` 是整对象 JSON 往返，这个手工键会一路带到保存后）。
 
 > **踩坑记录**：接线时新增了 `jsRuntime` / `jsRemoteComponents` 两个设置键，
 > 但老 `config.json` 里没有它们 → 前端 `s.jsRuntime.trim()` 抛 TypeError →

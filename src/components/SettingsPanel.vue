@@ -197,20 +197,6 @@ async function testBrowser() {
  */
 const jsInfo = ref<JsRuntimeInfo | null>(null)
 
-/** 实际会传给 yt-dlp 的运行时列表（留空则用检测结果）。 */
-const effectiveJs = computed(() => {
-  // 后端会补齐缺失键（lib.rs normalize_settings），但老配置 / mock 数据
-  // 仍可能没有这个字段——这里不兜住的话 `undefined.trim()` 会让整个面板白屏。
-  const manual = (s.jsRuntime ?? '').trim()
-  if (manual) {
-    return manual
-      .split(',')
-      .map((x) => x.trim())
-      .filter(Boolean)
-  }
-  return jsInfo.value?.detected ?? []
-})
-
 async function loadJsRuntimes() {
   try {
     jsInfo.value = await api.detectJsRuntimes()
@@ -914,16 +900,6 @@ const templateWarning = computed(() => {
               class="mono"
               :placeholder="(jsInfo?.detected ?? []).join(',') || '（未检测到）'"
             />
-          </label>
-          <p class="note">
-            当前生效：<code>{{ effectiveJs.join(', ') || '（无 —— YouTube 可能拿不到真实格式）' }}</code>
-          </p>
-          <label class="check sub">
-            <input v-model="s.jsRemoteComponents" type="checkbox" />
-            <span>
-              附加 --remote-components ejs:npm
-              <em>官方 exe 一般不需要（说明里写明），实测会让一次探测慢约 40 秒</em>
-            </span>
           </label>
 
           <h3>aria2c（多线程下载器）</h3>
