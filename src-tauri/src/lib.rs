@@ -1,0 +1,1072 @@
+//! Tauri 2 外壳：命令面、状态装配与事件推送。
+//!
+//! 设计上刻意保持「薄」：所有参数构造与输出解析都在 `ytdlp-core` 里，
+//! 这里只负责进程生命周期、持久化与前后端桥接。
+
+mod cookies;
+mod net;
+mod paths;
+mod runner;
+mod scheduler;
+mod shell;
+mod state;
+mod store;
+mod sysproxy;
+mod text;
+mod update;
+
+use serde_json::{json, Value};
+use scheduler::Scheduler;
+use state::{AppState, Task};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+/// 与 `src/mock.ts` 的 `defaultSettings` 保持同构。
+/// 默认绕过的地址：本机与内网。代理软件通常自己也会绕，但**宿主这一层必须也绕**——
+/// 实测把 `127.0.0.1` 的本地测试服务器丢给代理会直接连不上。
+const DEFAULT_PROXY_BYPASS: &str = "localhost,127.*,10.*,192.168.*,<local>";
+
+fn default_settings() -> Value {
+    json!({
+        // 必须是真实可用的目录：空串会让设置页与侧栏都显示空白
+        "outputDir": paths::default_output_dir().to_string_lossy(),
+        "tempDir": paths::default_temp_root().to_string_lossy(),
+        "probeConcurrency": 6,
+        "downloadConcurrency": 2,
+        "perHostConcurrency": 1,
+        "preset": "best",
+        "maxHeight": 1080,
+        "audioFormat": "mp3",
+        "container": "auto",
+        "embed": {
+            "subs": false, "subLangs": "all,-live_chat", "autoSubs": false,
+            "keepSubFiles": false, "thumbnail": false, "keepThumbnailFile": false,
+            "metadata": false, "chapters": false, "infoJson": false
+        },
+        "cookieMode": "none",
+        "cookieFile": "",
+        "cookieBrowser": "firefox",
+        // ── 代理（对应 Windows「设置 → 网络和 Internet → 代理」那一页）──
+        // none / system（读注册表）/ manual
+        "proxyMode": "none",
+        "proxyProtocol": "http",
+        "proxyHost": "",
+        "proxyPort": 8080,
+        // 本机与内网永远不该走代理——实测本地回环服务器走了代理就直接失败
+        "proxyBypass": DEFAULT_PROXY_BYPASS,
+        "proxyAuth": false,
+        "proxyUser": "",
+        "proxyPassword": "",
+        // 不勾「记住」时密码只留在内存，写盘前会被抹掉（见 save_settings）
+        "proxyRemember": true,
+        "aria2c": false,
+        "archiveEnabled": false,
+        "archivePath": paths::archive_file().to_string_lossy(),
+        "limitRate": "",
+        "filenameTemplate": "%(title).150B [%(id)s].%(ext)s",
+        // JS 运行时：留空表示自动检测。**不是可选优化**——
+        // 不给的话 YouTube 会返回「需要重载页面」或只给 storyboard。
+        "jsRuntime": "",
+        // --remote-components 一般不需要（官方 exe 自带），且实测慢 40 秒
+        "jsRemoteComponents": false
+    })
+}
+
+fn load_settings() -> Value {
+    std::fs::read_to_string(paths::settings_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(default_settings)
+}
+
+/// 递归补齐缺失的设置键。
+///
+/// `defaults` 的结构决定结果结构：对象逐键递归，其余以 `stored` 为准
+/// （只在 `stored` 是 `null` 时回落到默认值）。
+fn merge_defaults(defaults: Value, stored: Value) -> Value {
+    match defaults {
+        Value::Object(d) => match stored {
+            Value::Object(mut u) => {
+                for (k, dv) in d {
+                    let v = match u.remove(&k) {
+                        Some(uv) => merge_defaults(dv, uv),
+                        None => dv,
+                    };
+                    u.insert(k, v);
+                }
+                Value::Object(u)
+            }
+            // 类型对不上（null、字符串…）时回到默认值，
+            // 否则前端会拿到它没预期的类型
+            _ => Value::Object(d),
+        },
+        other => {
+            if stored.is_null() {
+                other
+            } else {
+                stored
+            }
+        }
+    }
+}
+
+/// 把早期的 `proxyEnabled` + `proxyUrl` 迁移成结构化的 `proxyMode` 配置。
+///
+/// 早期版本只有一个「使用代理 + 一个 URL 输入框」。升级后如果不管它，
+/// 用户配好的代理会静默失效——那是「明明昨天还能下、今天全失败」的经典来源。
+fn migrate_proxy(mut s: Value) -> Value {
+    // 已经有新配置就什么都不做
+    if s.get("proxyMode").is_some() {
+        return s;
+    }
+    let Some(obj) = s.as_object_mut() else {
+        return s;
+    };
+
+    let enabled = obj.get("proxyEnabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let url = obj
+        .get("proxyUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let parsed = if enabled {
+        ytdlp_core::parse_proxy_url(&url)
+    } else {
+        None
+    };
+
+    match parsed {
+        Some(c) => {
+            obj.insert("proxyMode".into(), Value::String("manual".into()));
+            obj.insert("proxyProtocol".into(), Value::String(c.protocol.as_str().into()));
+            obj.insert("proxyHost".into(), Value::String(c.host));
+            obj.insert("proxyPort".into(), Value::from(c.port));
+            if !c.user.is_empty() {
+                obj.insert("proxyAuth".into(), Value::Bool(true));
+                obj.insert("proxyUser".into(), Value::String(c.user));
+                obj.insert("proxyPassword".into(), Value::String(c.password));
+            }
+        }
+        None => {
+            obj.insert("proxyMode".into(), Value::String("none".into()));
+        }
+    }
+    s
+}
+
+/// 补全缺失或为空的设置项。
+///
+/// 两个真实踩过的坑：
+/// 1. 早期版本把 `outputDir` 默认成空串，用户在设置页看到的是空栏、
+///    侧栏也不显示路径——看起来像「没有设置项」。
+/// 2. 后来新增 `jsRuntime` 键，**老配置里根本没有这个键**，前端
+///    `s.jsRuntime.trim()` 抛 TypeError，整个设置面板白屏。逐个特判挡不住
+///    下一个新键，所以这里直接按 `default_settings()` 递归补齐。
+fn normalize_settings(s: Value) -> Value {
+    // ⚠️ 迁移必须在补全默认值**之前**：补全会把 `proxyMode` 填成默认的 "none"，
+    // 那样就再也分不清「老配置里压根没有这个键」和「用户真的选了不用代理」，
+    // 升级时会把用户已经配好的代理静默丢掉。
+    let s = migrate_proxy(s);
+    let mut s = merge_defaults(default_settings(), s);
+    let blank = s
+        .get("outputDir")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true);
+    if blank {
+        if let Some(obj) = s.as_object_mut() {
+            obj.insert(
+                "outputDir".into(),
+                Value::String(paths::default_output_dir().to_string_lossy().into_owned()),
+            );
+        }
+    }
+    s
+}
+
+/// 当前设置下的 temp 根目录（可由 `tempDir` 覆盖，见 `paths::temp_root`）。
+fn temp_root_of(state: &AppState) -> std::path::PathBuf {
+    let settings = state
+        .settings
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or(Value::Null);
+    paths::temp_root(&settings)
+}
+
+/// 回收不再对应任何任务的临时条目。
+///
+/// 删除任务时 `remove_dir_all` 可能因目录被占用而失败，留下空壳目录无限累积。
+/// 启动时统一清理。
+///
+/// **保留条件**：目录名是一个「还有续传价值」的任务 id。
+/// - 终态（`completed` / `skipped`）**不保留**：成品已经落到输出目录，
+///   yt-dlp 不会再续传任何东西，目录里只剩宿主自己写的 `filepath.txt`
+///   （那个路径早已存进 `Task::filepath`，删掉不影响「删除文件」）。
+/// - 其余状态（`paused` / `failed` / …）**必须保留**：`.part` 在里面，
+///   删了就是静默失去断点续传（DESIGN §5.1）。
+///
+/// 两个根都要扫：`tempDir` 是可以改的，改过之后旧根里还会留着历史碎片。
+/// temp 根下**只应该有任务目录**，所以名字对不上的一律清掉——
+/// 包括散落的文件（实测手工跑 yt-dlp 时会在根下丢下成品文件，永远没人回收）。
+/// 只在启动时调用，此刻没有任何任务在跑，不存在竞态。
+fn sweep_orphan_temp_dirs(state: &AppState) {
+    let keep: std::collections::HashSet<String> = state
+        .snapshot()
+        .into_iter()
+        .filter(has_resumable_temp)
+        .map(|t| t.id)
+        .collect();
+    let mut roots = vec![temp_root_of(state), paths::default_temp_root()];
+    roots.dedup();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            let is_dir = p.is_dir();
+            if is_dir && keep.contains(&name) && !is_empty_dir(&p) {
+                continue;
+            }
+            let _ = if is_dir {
+                std::fs::remove_dir_all(&p)
+            } else {
+                std::fs::remove_file(&p)
+            };
+        }
+    }
+}
+
+/// 这个任务的 temp 目录里还有没有值得续传的东西。
+///
+/// 终态即「下载流程已经走完」——`completed` 与 `skipped` 都返回 exit 0，
+/// 但两者都不会再碰 temp 目录（DESIGN §12.1）。
+fn has_resumable_temp(t: &Task) -> bool {
+    !matches!(t.state.as_str(), "completed" | "skipped")
+}
+
+/// 目录存在且一个条目都没有。读不到就当「不空」——宁可留着也不误删。
+fn is_empty_dir(p: &std::path::Path) -> bool {
+    match std::fs::read_dir(p) {
+        Ok(mut it) => it.next().is_none(),
+        Err(_) => false,
+    }
+}
+
+// ─────────────────────────── 命令 ───────────────────────────
+
+#[tauri::command]
+fn get_settings(state: State<AppState>) -> Value {
+    state
+        .settings
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| default_settings())
+}
+
+#[tauri::command]
+fn save_settings(state: State<AppState>, settings: Value) -> Result<(), String> {
+    if let Ok(mut s) = state.settings.lock() {
+        *s = settings.clone();
+    }
+
+    // 「记住密码」没勾时，密码只留在内存里，**写盘前抹掉**。
+    // 明文密码落在 config.json 里是用户明确表示不想要的事。
+    let mut on_disk = settings;
+    let remember = on_disk
+        .get("proxyRemember")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    if !remember {
+        if let Some(o) = on_disk.as_object_mut() {
+            o.insert("proxyPassword".into(), Value::String(String::new()));
+        }
+    }
+
+    let dir = paths::app_data_root();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(&on_disk).map_err(|e| e.to_string())?;
+    std::fs::write(paths::settings_file(), text).map_err(|e| e.to_string())
+}
+
+/// 读一次 Windows 的系统代理设置，供设置页展示。
+///
+/// 只是**展示**：`跟随系统代理` 模式在每次探测/下载时会重新读，
+/// 免得用户改了系统代理还得回来点一下。
+#[tauri::command]
+fn system_proxy() -> Value {
+    let p = sysproxy::current();
+    json!({
+        "enabled": p.enabled,
+        "server": p.server,
+        "bypass": p.bypass,
+        "autoConfigUrl": p.auto_config_url,
+        "resolved": p.proxy_url(),
+        // yt-dlp **不支持 PAC**，检测到就得如实告诉用户，别让他以为配了就能用
+        "usesPac": !p.auto_config_url.trim().is_empty(),
+    })
+}
+
+/// 把系统那套绕过列表（`ProxyOverride`）拿过来用。
+#[tauri::command]
+fn system_proxy_bypass() -> String {
+    sysproxy::current().bypass
+}
+
+#[tauri::command]
+fn list_tasks(state: State<AppState>) -> Vec<Task> {
+    state.snapshot()
+}
+
+#[tauri::command]
+fn add_url(app: AppHandle, url: String) -> Task {
+    let settings = {
+        let state = app.state::<AppState>();
+        state.settings.lock().map(|s| s.clone()).unwrap_or_else(|_| default_settings())
+    };
+    let output_dir = settings
+        .get("outputDir")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| paths::app_data_root().join("downloads").to_string_lossy().into_owned());
+
+    let id = format!("t-{:x}", state::now_ms());
+    let spec = runner::spec_from_settings(&settings, &url, &id);
+
+    let mut task = Task::new(
+        id.clone(),
+        url,
+        output_dir,
+        ytdlp_core::preset_expression(&spec.preset),
+    );
+    task.container = ytdlp_core::resolve_container(spec.container, &spec.embed)
+        .as_str()
+        .to_string();
+    task.queue_hint = Some("等待探测".into());
+
+    app.state::<AppState>().insert_task(task.clone());
+
+    // 立即广播，再交给调度器——**不直接启动下载**：
+    // 探测与下载是两个池，链路是 probe → (勾选) → queue → download。
+    let _ = app.emit("task://update", app.state::<AppState>().snapshot());
+    app.state::<Scheduler>().enqueue_probe(id);
+
+    task
+}
+
+/// 播放列表勾选完成后开始下载。
+///
+/// 用 `--playlist-items` 把选集交给 yt-dlp，而不是在宿主侧为每集建一条任务——
+/// 后者会打乱 `-f` 语义、也会让任务列表被几百条记录淹没（DESIGN §9）。
+#[tauri::command]
+fn start_playlist(app: AppHandle, id: String, indices: Vec<usize>) -> Result<(), String> {
+    let items = ytdlp_core::playlist_items_spec(&indices);
+    if items.is_none() {
+        return Err("没有勾选任何条目".into());
+    }
+
+    let url = app
+        .state::<AppState>()
+        .with_task(&id, |t| {
+            t.playlist_items = items.clone();
+            t.state = "queued".into();
+            t.queue_hint = Some("排队中".into());
+            t.url.clone()
+        })
+        .ok_or_else(|| "任务不存在".to_string())?;
+
+    let _ = app.emit("task://update", app.state::<AppState>().snapshot());
+    app.state::<Scheduler>()
+        .enqueue_download(id, ytdlp_core::host_of(&url));
+    Ok(())
+}
+
+/// 调度器状态，供界面显示「探测中 / 排队中」数量。
+#[tauri::command]
+fn scheduler_stats(app: AppHandle) -> Value {
+    let (probing, probe_queued, downloading, dl_queued) = app.state::<Scheduler>().stats();
+    let (probe_limit, dl_limit, host_limit) = scheduler::limits(&app);
+    // 数据库里的条数：与内存列表对照，能看出「有没有漏写库」
+    let stored = app
+        .state::<AppState>()
+        .stored_count()
+        .map(|n| n as i64)
+        .unwrap_or(-1);
+    json!({
+        "probing": probing,
+        "probeQueued": probe_queued,
+        "downloading": downloading,
+        "downloadQueued": dl_queued,
+        "probeLimit": probe_limit,
+        "downloadLimit": dl_limit,
+        "perHostLimit": host_limit,
+        "storedTasks": stored,
+    })
+}
+
+#[tauri::command]
+fn pause_task(app: AppHandle, id: String) {
+    runner::cancel_task(&app, &id);
+    // 从调度器里摘掉，否则槽位会被永久占用
+    app.state::<Scheduler>().forget(&id);
+    app.state::<AppState>().with_task(&id, |t| {
+        t.state = "paused".into();
+        t.post_process = None;
+        t.progress.speed = None;
+        t.progress.eta = None;
+        t.queue_hint = None;
+    });
+    let _ = app.emit("task://update", app.state::<AppState>().snapshot());
+}
+
+#[tauri::command]
+fn resume_task(app: AppHandle, id: String) {
+    app.state::<AppState>().with_task(&id, |t| {
+        t.state = "pending".into();
+        t.error = None;
+        t.queue_hint = Some("等待探测".into());
+    });
+    // 重新走一遍探测：设置可能已经变了（cookie/代理/格式），
+    // 而且原任务的探测结果可能已过期。
+    app.state::<Scheduler>().enqueue_probe(id);
+    let _ = app.emit("task://update", app.state::<AppState>().snapshot());
+}
+
+/// 设置单个任务的 `-f` 表达式，并**立刻按新格式重下**。
+///
+/// 这是「可用格式」对话框的落点。之所以要重下而不是只存下来：
+/// 存下来但什么都不发生，用户会以为按钮坏了——DESIGN 反复强调的
+/// 「静默无反应」就是这么来的。确认按钮的文案已经写明会重新下载。
+#[tauri::command]
+fn set_task_format(app: AppHandle, id: String, expression: String) {
+    let expr = expression.trim().to_string();
+    // 空串 = **恢复成设置里的预设**，而不是留一个空表达式——
+    // 否则任务详情里那行会显示成空白，用户以为坏了。
+    let (override_, shown) = if expr.is_empty() {
+        let settings = app
+            .state::<AppState>()
+            .settings
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or(Value::Null);
+        (
+            None,
+            ytdlp_core::preset_expression(&runner::preset_of(&settings)),
+        )
+    } else {
+        (Some(expr.clone()), expr)
+    };
+
+    app.state::<AppState>().with_task(&id, |t| {
+        t.format_expression = shown.clone();
+        t.format_override = override_.clone();
+    });
+    // 走和「重新下载」完全一样的路径：先探测再下载。
+    // 探测会顺带刷新格式表，用户能立刻看到新表达式带来的变化。
+    app.state::<AppState>().with_task(&id, |t| {
+        t.state = "pending".into();
+        t.error = None;
+        t.queue_hint = Some("等待探测".into());
+    });
+    app.state::<Scheduler>().enqueue_probe(id);
+    let _ = app.emit("task://update", app.state::<AppState>().snapshot());
+}
+
+/// 移除任务记录，并清理该任务的临时目录。
+///
+/// **不删除成品文件** —— 那是独立的「删除文件」动作（DESIGN §13）。
+#[tauri::command]
+fn remove_record(app: AppHandle, id: String) {
+    runner::cancel_task(&app, &id);
+    app.state::<Scheduler>().forget(&id);
+    // 用当前设置里的 temp 根，而不是默认根——否则改过 tempDir 的任务
+    // 删记录后会留下整个临时目录。
+    let root = temp_root_of(&app.state::<AppState>());
+    let _ = std::fs::remove_dir_all(paths::task_temp_dir_in(&root, &id));
+    app.state::<AppState>().remove_tasks(&[id]);
+    let _ = app.emit("task://update", app.state::<AppState>().snapshot());
+}
+
+#[tauri::command]
+fn remove_many(app: AppHandle, ids: Vec<String>) {
+    let root = temp_root_of(&app.state::<AppState>());
+    for id in &ids {
+        runner::cancel_task(&app, id);
+        app.state::<Scheduler>().forget(id);
+        let _ = std::fs::remove_dir_all(paths::task_temp_dir_in(&root, id));
+    }
+    app.state::<AppState>().remove_tasks(&ids);
+    let _ = app.emit("task://update", app.state::<AppState>().snapshot());
+}
+
+/// 从 download-archive 移除条目，使视频可重新下载。
+///
+/// ⚠️ 仅此一步**不足以**重新下载：成品文件仍在磁盘时 yt-dlp 会跳过并返回 exit=0
+/// （DESIGN §13.2）。
+#[tauri::command]
+fn remove_from_archive(state: State<AppState>, ids: Vec<String>) -> Result<usize, String> {
+    let settings = state.settings.lock().map(|s| s.clone()).unwrap_or(Value::Null);
+    let archive = settings
+        .get("archivePath")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(paths::archive_file);
+
+    if !archive.exists() {
+        return Ok(0);
+    }
+
+    // 归档写入在 yt-dlp 侧有 LockFileEx 独占锁；宿主改写必须容忍占用并重试。
+    let mut removed = 0usize;
+    for _attempt in 0..5 {
+        let content = match std::fs::read_to_string(&archive) {
+            Ok(c) => c,
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                continue;
+            }
+        };
+        let kept: Vec<&str> = content
+            .lines()
+            .filter(|line| {
+                let hit = ids.iter().any(|id| line.contains(id.as_str()));
+                if hit {
+                    removed += 1;
+                }
+                !hit
+            })
+            .collect();
+        let mut out = kept.join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        match std::fs::write(&archive, out) {
+            Ok(_) => return Ok(removed),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(120)),
+        }
+    }
+    Err("归档文件被占用，无法写入".into())
+}
+
+/// 删除单条记录的成品文件。**独立动作，永不自动执行**（DESIGN §13.2）。
+#[tauri::command]
+fn delete_file(state: State<AppState>, id: String) -> Result<(), String> {
+    let path = {
+        let tasks = state.tasks.lock().map_err(|e| e.to_string())?;
+        tasks
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.filepath.clone())
+    };
+    let Some(p) = path else {
+        return Err("该任务没有已落地的文件".into());
+    };
+    match std::fs::remove_file(&p) {
+        Ok(_) => {
+            state.with_task(&id, |t| t.filepath = None);
+            Ok(())
+        }
+        // 文件可能正被播放器占用 —— 必须明确报错而不是静默失败。
+        Err(e) => Err(format!("删除失败（文件可能正被占用）：{e}")),
+    }
+}
+
+/// 用系统默认程序打开已下载的文件（行双击 / 详情里的「打开文件」）。
+#[tauri::command]
+fn open_file(path: String) -> Result<(), String> {
+    shell::open_file(&path)
+}
+
+/// 在资源管理器中选中该文件（而不是打开它）。
+#[tauri::command]
+fn reveal_file(path: String) -> Result<(), String> {
+    shell::reveal_file(&path)
+}
+
+/// 弹原生「选择文件夹」对话框。返回 `None` 表示用户取消。
+///
+/// 命令声明成 `async` + `spawn_blocking`：对话框是模态阻塞的，
+/// 跑在主线程上会把窗口和消息循环一起卡死。
+#[tauri::command]
+async fn pick_folder(initial: Option<String>) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || shell::pick_folder(initial.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 弹原生「选择文件」对话框。返回 `None` 表示用户取消。
+#[tauri::command]
+async fn pick_file(initial: Option<String>) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || shell::pick_file(initial.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 探测可用格式。
+///
+/// 返回**解析后的** `MediaInfo`（camelCase，且已滤掉 storyboard 之类的非媒体条目），
+/// 而不是原始 JSON——否则前端要再写一份 snake_case → camelCase 的字段映射，
+/// 两条解析路径必然分叉（DESIGN §3 的老问题）。
+#[tauri::command]
+async fn probe_formats(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<ytdlp_core::MediaInfo, String> {
+    let settings = state.settings.lock().map(|s| s.clone()).unwrap_or(Value::Null);
+    let Some(exe) = paths::resolve_ytdlp() else {
+        return Err("未找到 yt-dlp 可执行文件".into());
+    };
+    // Cookie 与 JS 运行时**必须在探测阶段就生效**：
+    // 很多站点不登录连元数据都拿不到（DESIGN §6），
+    // 而 YouTube 没有 JS 运行时就会返回降级结果。
+    let proxy = runner::proxy_for(&settings, &url);
+    let cookie = runner::cookies_of(&settings);
+    let js = runner::js_of(&settings);
+
+    let args = ytdlp_core::build_probe_args(&url, proxy.as_deref(), cookie.as_ref(), false, &js);
+    let out = tokio::process::Command::new(exe)
+        .args(&args)
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // `--dump-single-json` 的 JSON 走 stdout，是 UTF-8
+    // （控制台乱码那件事只影响 stderr 的人读文本，见 HANDOFF §3.7）。
+    ytdlp_core::parse_info_json(&String::from_utf8_lossy(&out.stdout))
+        .map_err(|e| format!("解析探测结果失败：{e}"))
+}
+
+// ─────────────────────── Cookie（DESIGN §6）───────────────────────
+//
+// 多 profile 而不是单个输入框：用户必然有多套身份（B站账号 A / YouTube 账号 B）。
+// 列表接口**不返回 cookie 内容**，只返回元数据。
+
+#[tauri::command]
+fn list_cookie_profiles() -> Vec<cookies::CookieProfile> {
+    cookies::list()
+}
+
+/// 导入一份 cookies.txt。**先校验格式再落盘**，格式错误带行号返回。
+#[tauri::command]
+fn import_cookie_profile(
+    name: String,
+    content: String,
+    origin: String,
+) -> Result<cookies::CookieProfile, String> {
+    cookies::save(&name, &content, &origin)
+}
+
+#[tauri::command]
+fn delete_cookie_profile(id: String) -> Result<(), String> {
+    cookies::remove(&id)
+}
+
+/// 导入前预览：读一份外部 cookies.txt 并校验，返回 cookie 条数。
+#[tauri::command]
+fn inspect_cookie_file(path: String) -> Result<usize, String> {
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取失败：{e}"))?;
+    ytdlp_core::validate_netscape(&content).map_err(|e| e.message())
+}
+
+/// 预检已导入的 profile 是否仍可用（文件可能被外部删掉或改坏）。
+#[tauri::command]
+fn test_cookie_profile(id: String) -> Value {
+    let p = cookies::check_profile(&id);
+    json!({ "ok": p.is_ok(), "summary": p.summary() })
+}
+
+/// 预检「从浏览器读取」。会真的跑一次 yt-dlp 并分类失败原因。
+#[tauri::command]
+async fn test_cookie_browser(browser: String) -> Value {
+    // 先校验浏览器名——错误信息里能列出所有可选项，比让 yt-dlp 报
+    // "unsupported browser" 有用得多。profile 名无从枚举，交给 yt-dlp。
+    if let Err(e) = ytdlp_core::cookies::validate_browser_spec(&browser) {
+        return json!({ "ok": false, "summary": format!("✘ {e}") });
+    }
+    let p = cookies::check_browser(&browser).await;
+    json!({ "ok": p.is_ok(), "summary": p.summary() })
+}
+
+/// 枚举本机可用的浏览器及其 profile。
+///
+/// 界面上不再写死三个浏览器：本机可能装了别的，而且同一浏览器常有多个 profile
+/// （工作与个人各一份，登录态不同）。检测用的路径与 yt-dlp 一致，
+/// 保证「选得到的」就是「读得到的」。
+#[tauri::command]
+fn list_browsers() -> Vec<cookies::BrowserChoice> {
+    cookies::list_browsers()
+}
+
+// ─────────────────── yt-dlp 自更新（DESIGN §8）───────────────────
+//
+// 三条更新链路里唯一不需要重新发版宿主的那条。
+// ureq 是阻塞的，用 spawn_blocking 包起来，别堵住主线程。
+
+#[tauri::command]
+async fn check_ytdlp_update(state: State<'_, AppState>) -> Result<Value, String> {
+    let settings = state.settings.lock().map(|s| s.clone()).unwrap_or(Value::Null);
+    let proxy = runner::proxy_of(&settings);
+    let info = tauri::async_runtime::spawn_blocking(move || update::check(proxy.as_deref()))
+        .await
+        .map_err(|e| e.to_string())??;
+    serde_json::to_value(info).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn apply_ytdlp_update(state: State<'_, AppState>) -> Result<String, String> {
+    let settings = state.settings.lock().map(|s| s.clone()).unwrap_or(Value::Null);
+    let proxy = runner::proxy_of(&settings);
+    tauri::async_runtime::spawn_blocking(move || update::apply(proxy.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 代理连通性检查（DESIGN §7）。
+///
+/// 必须真的发一次请求：只校验地址格式的话，用户配了个没启动的代理
+/// 依然会看到「格式正确」，然后在任务失败时一头雾水。
+///
+/// 返回 `Result` 是硬性要求：async 命令只要含引用型输入（这里是 `State<'_, _>`），
+/// Tauri 就要求返回值是 `Result`。
+#[tauri::command]
+async fn test_proxy(state: State<'_, AppState>) -> Result<Value, String> {
+    let settings = state.settings.lock().map(|s| s.clone()).unwrap_or(Value::Null);
+    let Some(proxy) = runner::proxy_of(&settings) else {
+        return Ok(json!({
+            "ok": false,
+            "summary": match settings.get("proxyMode").and_then(|v| v.as_str()) {
+                Some("system") => "系统没有启用代理（注册表里 ProxyEnable 为 0）。".to_string(),
+                _ => "还没填代理地址。选「手动配置」并填写主机名与端口。".to_string(),
+            }
+        }));
+    };
+    let shown = proxy.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || net::check_proxy(&proxy))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(match res {
+        Ok(summary) => json!({ "ok": true, "summary": summary }),
+        // 代理串里可能含密码，报错信息里必须换成脱敏的那份
+        Err(msg) => json!({ "ok": false, "summary": msg.replace(&shown, &runner::redact_proxy(&shown)) }),
+    })
+}
+
+/// 检测本机可用的 JS 运行时。
+///
+/// **不是可选优化**：实测同一份 yt-dlp、同一个链接、同样的 cookie 与代理，
+/// 只差 `--js-runtimes node` 就是「需要重载页面」与「成功」的区别。
+/// yt-dlp 不会自动启用已安装的运行时。
+#[tauri::command]
+fn detect_js_runtimes() -> Value {
+    let candidates: Vec<Value> = paths::detect_js_runtimes_detailed()
+        .into_iter()
+        .map(|(name, path)| json!({ "name": name, "path": path }))
+        .collect();
+    json!({
+        "detected": paths::detect_js_runtimes(),
+        "candidates": candidates,
+    })
+}
+
+/// aria2c 可执行文件信息，供设置页展示。
+///
+/// 用户需要知道**当前用的是哪一份**：随包的出厂副本、还是 PATH 上那份旧的。
+/// 两者行为可能不同（版本、连接数限制），出问题时这是第一个要看的信息。
+#[tauri::command]
+fn aria2c_info() -> Value {
+    let (path, version) = paths::aria2c_status();
+    json!({
+        "found": path.is_some(),
+        "path": path,
+        "version": version,
+    })
+}
+
+/// yt-dlp 可执行文件信息，供设置页展示与「检查更新」使用。
+#[tauri::command]
+async fn ytdlp_info(state: State<'_, AppState>) -> Result<Value, String> {
+    let Some(exe) = paths::resolve_ytdlp() else {
+        return Ok(json!({ "found": false }));
+    };
+    let out = tokio::process::Command::new(&exe)
+        .arg("--version")
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    let version = crate::text::decode_console(&out.stdout).trim().to_string();
+    Ok(json!({
+        "found": true,
+        "path": exe.to_string_lossy(),
+        "version": version,
+        // 替换前必须用它验证新文件：损坏的 exe 会让所有任务同时失败（DESIGN §8）。
+        "versionLooksValid": ytdlp_core::looks_like_version(&version),
+        // 升级副本目录里有什么（含上次更新留下的 .old），便于排查
+        "appDataBin": update::installed_files()
+            .iter()
+            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        "archivePath": state.settings.lock().ok()
+            .and_then(|s| s.get("archivePath").and_then(|v| v.as_str()).map(str::to_string))
+            .unwrap_or_default(),
+    }))
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .setup(|app| {
+            // 把窗口夹到当前显示器能容纳的范围。
+            //
+            // ⚠️ 必须**基于 `tauri.conf.json` 里已经生效的尺寸**来夹，不能再写一份常量。
+            // 原来这里硬编码 `1440x920`，于是改 conf 里的 `width`/`height` 完全没效果——
+            // 排查了半天才发现在 setup 里被覆盖掉了。
+            //
+            // 只往下夹、不往上撑：用户配的小窗口不该被这里的下限放大。
+            // 下限由 conf 里的 `minWidth`/`minHeight` 负责（Tauri 会交给系统约束）。
+            if let Some(win) = app.get_webview_window("main") {
+                if let Ok(Some(mon)) = win.current_monitor() {
+                    let logical = mon.size().to_logical::<f64>(mon.scale_factor());
+                    if let Ok(cur) = win.inner_size() {
+                        let cur = cur.to_logical::<f64>(win.scale_factor().unwrap_or(1.0));
+                        // 留出任务栏与窗口边框的余量
+                        let w = cur.width.min(logical.width - 32.0);
+                        let h = cur.height.min(logical.height - 72.0);
+                        if w < cur.width || h < cur.height {
+                            let _ = win.set_size(tauri::LogicalSize::new(w, h));
+                        }
+                    }
+                }
+                let _ = win.center();
+            }
+
+            let state = AppState::default();
+            if let Ok(mut s) = state.settings.lock() {
+                *s = normalize_settings(load_settings());
+            }
+            // 恢复下载历史，并把崩溃时残留的进行中任务重置为 paused（DESIGN §5.3）。
+            if let Err(e) = state.init_db(&paths::db_file()) {
+                // 数据库坏掉不该让应用起不来：空列表继续跑，用户还能重新下载
+                eprintln!("初始化任务数据库失败，本次以空历史启动：{e}");
+            }
+            sweep_orphan_temp_dirs(&state);
+            // 上次更新留下的 .old 此时进程已退出，可以安全删除（DESIGN §8）
+            update::sweep_old_binaries();
+            app.manage(state);
+            app.manage(Scheduler::default());
+
+            // 探测与下载由两个独立并发池调度（DESIGN §4）。
+            scheduler::spawn(app.handle().clone());
+
+            // 后台节流落库。
+            //
+            // 进度更新频率很高（实测每秒数条），**不能每次变更都写库**；
+            // 这里每 3 秒把「变过的」和「删掉的」那几条在一个事务里写下去
+            // （DESIGN §5.2）。只写变化项，不做全量重写。
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let st = handle.state::<AppState>();
+                    if st.has_pending() {
+                        if let Err(e) = st.flush() {
+                            eprintln!("写入任务历史失败：{e}");
+                        }
+                    }
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_settings,
+            save_settings,
+            list_tasks,
+            add_url,
+            start_playlist,
+            scheduler_stats,
+            pause_task,
+            resume_task,
+            set_task_format,
+            remove_record,
+            remove_many,
+            remove_from_archive,
+            delete_file,
+            open_file,
+            reveal_file,
+            pick_folder,
+            pick_file,
+            probe_formats,
+            ytdlp_info,
+            aria2c_info,
+            list_cookie_profiles,
+            import_cookie_profile,
+            delete_cookie_profile,
+            inspect_cookie_file,
+            test_cookie_profile,
+            test_cookie_browser,
+            list_browsers,
+            detect_js_runtimes,
+            check_ytdlp_update,
+            apply_ytdlp_update,
+            test_proxy,
+            system_proxy,
+            system_proxy_bypass,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 老配置里没有新键 → 前端 `s.jsRuntime.trim()` 抛 TypeError、设置面板白屏。
+    /// 这个测试锁住「缺失键必须被补齐」。
+    #[test]
+    fn merge_defaults_fills_missing_keys() {
+        let defaults = json!({ "a": "", "jsRuntime": "", "jsRemoteComponents": false });
+        let stored = json!({ "a": "keep" });
+        let merged = merge_defaults(defaults, stored);
+
+        assert_eq!(merged["a"], json!("keep"));
+        assert_eq!(merged["jsRuntime"], json!(""));
+        assert_eq!(merged["jsRemoteComponents"], json!(false));
+    }
+
+    #[test]
+    fn merge_defaults_recurses_into_nested_objects() {
+        let defaults = json!({ "embed": { "subs": false, "thumbnail": false } });
+        let stored = json!({ "embed": { "subs": true } });
+        let merged = merge_defaults(defaults, stored);
+
+        assert_eq!(merged["embed"]["subs"], json!(true));
+        assert_eq!(merged["embed"]["thumbnail"], json!(false));
+    }
+
+    /// 类型对不上时不能把用户的值吞掉，也不能让前端拿到错类型。
+    #[test]
+    fn merge_defaults_keeps_stored_values() {
+        let merged = merge_defaults(json!({ "n": 1, "s": "x" }), json!({ "n": 7, "s": "y" }));
+        assert_eq!(merged["n"], json!(7));
+        assert_eq!(merged["s"], json!("y"));
+    }
+
+    #[test]
+    fn merge_defaults_replaces_null_with_object_default() {
+        let merged = merge_defaults(json!({ "embed": { "subs": false } }), json!({ "embed": null }));
+        assert_eq!(merged["embed"]["subs"], json!(false));
+    }
+
+    #[test]
+    fn merge_defaults_non_object_stored_falls_back_to_defaults() {
+        let merged = merge_defaults(json!({ "a": 1 }), json!("not an object"));
+        assert_eq!(merged["a"], json!(1));
+    }
+
+    /// 非对象默认值 + `null` 存量 → 用默认值；非 null 存量 → 原样保留。
+    #[test]
+    fn merge_defaults_scalar_rules() {
+        assert_eq!(merge_defaults(json!(5), json!(null)), json!(5));
+        assert_eq!(merge_defaults(json!(5), json!(9)), json!(9));
+    }
+
+    fn task_in_state(state: &str) -> Task {        let mut t = Task::new(
+            "t-1".into(),
+            "https://example.com/v".into(),
+            ".".into(),
+            "bv*+ba/b".into(),
+        );
+        t.state = state.into();
+        t
+    }
+
+    /// 终态任务没有可续传的东西，temp 目录该被回收；
+    /// 其余状态必须保留 `.part`，否则断点续传静默失效（DESIGN §5.1）。
+    #[test]
+    fn only_non_terminal_states_keep_their_temp_dir() {
+        for state in ["completed", "skipped"] {
+            assert!(!has_resumable_temp(&task_in_state(state)), "{state} 应回收");
+        }
+        for state in [
+            "pending",
+            "probing",
+            "downloading",
+            "postprocessing",
+            "paused",
+            "failed",
+            "canceled",
+        ] {
+            assert!(has_resumable_temp(&task_in_state(state)), "{state} 应保留");
+        }
+    }
+
+    // ───────── 代理：旧配置迁移 ─────────
+
+    /// **升级不能把用户配好的代理丢掉**——否则表现是「昨天还能下，今天全失败」。
+    #[test]
+    fn legacy_enabled_proxy_migrates_to_manual() {
+        let s = normalize_settings(json!({
+            "proxyEnabled": true,
+            "proxyUrl": "http://127.0.0.1:7897",
+        }));
+        assert_eq!(s["proxyMode"], json!("manual"));
+        assert_eq!(s["proxyHost"], json!("127.0.0.1"));
+        assert_eq!(s["proxyPort"], json!(7897));
+        assert_eq!(s["proxyProtocol"], json!("http"));
+    }
+
+    #[test]
+    fn legacy_disabled_proxy_migrates_to_none() {
+        let s = normalize_settings(json!({ "proxyEnabled": false, "proxyUrl": "http://h:1" }));
+        assert_eq!(s["proxyMode"], json!("none"));
+    }
+
+    /// 勾了「使用代理」但地址是空的/填坏的 → 退回不用代理，
+    /// 而不是留一个 manual + 空主机（那会让每次请求都失败）。
+    #[test]
+    fn legacy_enabled_but_unparseable_falls_back_to_none() {
+        for bad in ["", "   ", "http://:8080"] {
+            let s = normalize_settings(json!({ "proxyEnabled": true, "proxyUrl": bad }));
+            assert_eq!(s["proxyMode"], json!("none"), "输入: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn legacy_proxy_with_credentials_migrates_auth() {
+        let s = normalize_settings(json!({
+            "proxyEnabled": true,
+            "proxyUrl": "socks5://u:p%40w@h:1080",
+        }));
+        assert_eq!(s["proxyMode"], json!("manual"));
+        assert_eq!(s["proxyProtocol"], json!("socks5h"));
+        assert_eq!(s["proxyAuth"], json!(true));
+        assert_eq!(s["proxyUser"], json!("u"));
+        assert_eq!(s["proxyPassword"], json!("p@w"));
+    }
+
+    /// 已经是新配置时，迁移必须**原样放过**——不能把用户选的 none 又改回 manual。
+    #[test]
+    fn migration_does_not_touch_new_config() {
+        let s = normalize_settings(json!({
+            "proxyMode": "none",
+            "proxyEnabled": true,
+            "proxyUrl": "http://127.0.0.1:7897",
+        }));
+        assert_eq!(s["proxyMode"], json!("none"));
+    }
+
+    /// 老配置里没有 proxyBypass，补全后应当拿到「本机 + 内网」的默认值。
+    #[test]
+    fn missing_bypass_gets_local_defaults() {
+        let s = normalize_settings(json!({}));
+        let b = s["proxyBypass"].as_str().unwrap();
+        assert!(b.contains("127.*"), "实际: {b}");
+        assert!(b.contains("localhost"));
+        assert!(b.contains("<local>"));
+    }
+}

@@ -1,0 +1,247 @@
+/**
+ * 演示数据。
+ *
+ * 在浏览器里跑 `vite dev` 时（非 Tauri 环境）用它驱动界面，
+ * 这样页面设计可以脱离 Rust 后端独立查看。
+ */
+
+import type { FormatOption, Settings, Task } from './types'
+
+/** 生成内联 SVG 缩略图，避免依赖网络。 */
+function thumb(hue: number, seed: string): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="hsl(${hue},62%,42%)"/>
+      <stop offset="100%" stop-color="hsl(${(hue + 48) % 360},58%,24%)"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="180" fill="url(#g)"/>
+  <circle cx="160" cy="90" r="30" fill="rgba(255,255,255,.20)"/>
+  <path d="M150 74 L150 106 L178 90 Z" fill="rgba(255,255,255,.92)"/>
+  <text x="14" y="168" font-family="system-ui,sans-serif" font-size="15"
+        fill="rgba(255,255,255,.72)">${seed}</text>
+</svg>`
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+}
+
+const now = Date.now()
+
+export const demoTasks: Task[] = [
+  {
+    id: 't-8f21',
+    url: 'https://www.bilibili.com/video/BV1xx411c7mD',
+    title: '【4K 修复】城市夜景延时摄影合集 — 上海 · 东京 · 香港',
+    extractor: 'BiliBili',
+    thumbnail: thumb(212, 'BiliBili · 4K'),
+    durationSec: 1847,
+    state: 'downloading',
+    postProcess: null,
+    skipReason: null,
+    progress: { downloaded: 428_130_304, total: 1_073_741_824, speed: 6_412_288, eta: 101 },
+    filepath: null,
+    formatExpression: 'bv*[height<=2160]+ba/b[height<=2160]/b',
+    container: 'mkv',
+    outputDir: 'D:\\Videos',
+    error: null,
+    warnings: [],
+    addedAt: now - 320_000,
+    finishedAt: null,
+  },
+  {
+    id: 't-3a90',
+    url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    title: 'Building a Desktop App with Tauri 2 and Rust — Full Walkthrough',
+    extractor: 'YouTube',
+    thumbnail: thumb(6, 'YouTube · 1080p'),
+    durationSec: 2_634,
+    state: 'postprocessing',
+    postProcess: 'EmbedSubtitle',
+    skipReason: null,
+    progress: { downloaded: 512_409_600, total: 512_409_600, speed: 5_118_001, eta: 0 },
+    filepath: null,
+    formatExpression: 'bv*[height<=1080]+ba/b[height<=1080]/b',
+    container: 'mkv',
+    outputDir: 'D:\\Videos',
+    error: null,
+    warnings: [],
+    addedAt: now - 900_000,
+    finishedAt: null,
+  },
+  {
+    id: 't-77bd',
+    url: 'https://www.bilibili.com/video/BV1yy4y1B7Zt',
+    title: '从零实现一个下载器：并发调度与断点续传的坑',
+    extractor: 'BiliBili',
+    thumbnail: thumb(280, 'BiliBili · 1080p'),
+    durationSec: 3_102,
+    state: 'paused',
+    postProcess: null,
+    skipReason: null,
+    progress: { downloaded: 96_468_992, total: 644_245_504, speed: null, eta: null },
+    filepath: null,
+    formatExpression: 'bv*[height<=1080]+ba/b[height<=1080]/b',
+    container: 'mp4',
+    outputDir: 'D:\\Videos',
+    error: null,
+    warnings: [],
+    addedAt: now - 1_500_000,
+    finishedAt: null,
+  },
+  {
+    id: 't-51ce',
+    url: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ',
+    title: 'Big Buck Bunny — 60fps Reference Clip',
+    extractor: 'YouTube',
+    thumbnail: thumb(140, 'YouTube · 4K60'),
+    durationSec: 635,
+    state: 'pending',
+    postProcess: null,
+    skipReason: null,
+    progress: { downloaded: null, total: null, speed: null, eta: null },
+    filepath: null,
+    formatExpression: 'bv*+ba/b',
+    container: 'mkv',
+    outputDir: 'D:\\Videos',
+    error: null,
+    warnings: [],
+    addedAt: now - 60_000,
+    finishedAt: null,
+  },
+  {
+    id: 't-2d40',
+    url: 'https://www.bilibili.com/video/BV1zz4y1B7Zt',
+    title: 'Japanese Listening Practice — 30 Minutes Natural Conversation',
+    extractor: 'YouTube',
+    thumbnail: thumb(190, 'YouTube · Audio'),
+    durationSec: 1_812,
+    state: 'completed',
+    postProcess: null,
+    skipReason: null,
+    progress: { downloaded: 41_943_040, total: 41_943_040, speed: null, eta: 0 },
+    filepath: 'D:\\Videos\\Japanese Listening Practice — 30 Minutes Natural Conversation [2d40].m4a',
+    formatExpression: 'ba/b',
+    container: 'mp4',
+    outputDir: 'D:\\Videos',
+    error: null,
+    warnings: [],
+    addedAt: now - 5_400_000,
+    finishedAt: now - 4_800_000,
+  },
+  {
+    id: 't-9be3',
+    url: 'https://vimeo.com/76979871',
+    title: 'The New Vimeo Player (staff pick)',
+    extractor: 'Vimeo',
+    thumbnail: thumb(330, 'Vimeo · 720p'),
+    durationSec: 62,
+    state: 'skipped',
+    postProcess: null,
+    skipReason: 'fileExists',
+    progress: { downloaded: null, total: null, speed: null, eta: null },
+    filepath: 'D:\\Videos\\The New Vimeo Player (staff pick) [9be3].mp4',
+    formatExpression: 'bv*[height<=720]+ba/b[height<=720]/b',
+    container: 'mp4',
+    outputDir: 'D:\\Videos',
+    error: null,
+    warnings: [],
+    addedAt: now - 7_200_000,
+    finishedAt: now - 7_100_000,
+  },
+  {
+    id: 't-6c17',
+    url: 'https://www.bilibili.com/video/BV1qq4y1B7Zt',
+    title: '会员专享：纪录片《深海》第四集',
+    extractor: 'BiliBili',
+    thumbnail: thumb(24, 'BiliBili · 会员'),
+    durationSec: 2_940,
+    state: 'failed',
+    postProcess: null,
+    skipReason: null,
+    progress: { downloaded: null, total: null, speed: null, eta: null },
+    filepath: null,
+    formatExpression: 'bv*[height<=1080]+ba/b[height<=1080]/b',
+    container: 'mkv',
+    outputDir: 'D:\\Videos',
+    error: '认证失效：Sign in to confirm you are not a bot（cookie 可能已过期）',
+    warnings: [],
+    addedAt: now - 9_000_000,
+    finishedAt: now - 8_900_000,
+  },
+  {
+    id: 't-4fa8',
+    url: 'https://www.youtube.com/watch?v=9bZkp7q19f0',
+    title: 'PSY - GANGNAM STYLE (강남스타일) M/V',
+    extractor: 'YouTube',
+    thumbnail: thumb(52, 'YouTube · 1080p'),
+    durationSec: 253,
+    state: 'completed',
+    postProcess: null,
+    skipReason: null,
+    progress: { downloaded: 88_899_584, total: 88_899_584, speed: null, eta: 0 },
+    filepath: 'D:\\Videos\\PSY - GANGNAM STYLE (강남스타일) M_V [4fa8].mkv',
+    formatExpression: 'bv*[height<=1080]+ba/b[height<=1080]/b',
+    container: 'mkv',
+    outputDir: 'D:\\Videos',
+    error: null,
+    // §14.3：嵌入告警必须能被看到，不能静默吞掉。
+    warnings: [
+      'ASS subtitles cannot be properly embedded in mp4 files; expect issues',
+      '尚未检测到 ffmpeg，已跳过缩略图嵌入',
+    ],
+    addedAt: now - 12_000_000,
+    finishedAt: now - 11_800_000,
+  },
+]
+
+export const demoFormats: FormatOption[] = [
+  { formatId: '137', ext: 'mp4', resolution: '1920x1080', fps: 30, vcodec: 'avc1.640028', acodec: null, filesize: 402_653_184, tbr: 4_212, note: '1080p video only' },
+  { formatId: '248', ext: 'webm', resolution: '1920x1080', fps: 30, vcodec: 'vp9', acodec: null, filesize: 318_767_104, tbr: 3_140, note: '1080p video only' },
+  { formatId: '399', ext: 'mp4', resolution: '1920x1080', fps: 60, vcodec: 'av01.0.08M.08', acodec: null, filesize: 268_435_456, tbr: 2_680, note: '1080p60 video only' },
+  { formatId: '136', ext: 'mp4', resolution: '1280x720', fps: 30, vcodec: 'avc1.4d401f', acodec: null, filesize: 214_958_080, tbr: 2_140, note: '720p video only' },
+  { formatId: '140', ext: 'm4a', resolution: 'audio only', fps: null, vcodec: null, acodec: 'mp4a.40.2', filesize: 8_589_934, tbr: 129, note: 'medium, m4a_dash' },
+  { formatId: '251', ext: 'webm', resolution: 'audio only', fps: null, vcodec: null, acodec: 'opus', filesize: 7_340_032, tbr: 110, note: 'medium, webm_dash' },
+]
+
+export const defaultSettings: Settings = {
+  outputDir: 'D:\\Videos',
+  tempDir: '%APPDATA%\\ytdlp-desktop\\tmp',
+  probeConcurrency: 6,
+  downloadConcurrency: 2,
+  perHostConcurrency: 1,
+  preset: 'maxHeight',
+  maxHeight: 1080,
+  audioFormat: 'mp3',
+  container: 'auto',
+  embed: {
+    subs: true,
+    subLangs: 'zh-Hans,zh-Hant,en',
+    autoSubs: true,
+    keepSubFiles: false,
+    thumbnail: true,
+    keepThumbnailFile: false,
+    metadata: true,
+    chapters: false,
+    infoJson: false,
+  },
+  cookieMode: 'profile',
+  cookieProfileId: 'demo1',
+  cookieFile: 'C:\\Users\\slt\\AppData\\Roaming\\ytdlp-desktop\\cookies\\bilibili.txt',
+  cookieBrowser: 'firefox',
+  proxyMode: 'manual',
+  proxyProtocol: 'http',
+  proxyHost: '127.0.0.1',
+  proxyPort: 7897,
+  proxyBypass: 'localhost,127.*,10.*,192.168.*,<local>',
+  proxyAuth: false,
+  proxyUser: '',
+  proxyPassword: '',
+  proxyRemember: true,
+  aria2c: false,
+  archiveEnabled: true,
+  archivePath: 'C:\\Users\\slt\\AppData\\Roaming\\ytdlp-desktop\\archive.txt',
+  limitRate: '',
+  filenameTemplate: '%(title).150B [%(id)s].%(ext)s',
+  jsRuntime: '',
+  jsRemoteComponents: false,
+}

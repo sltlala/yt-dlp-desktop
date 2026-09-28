@@ -1,0 +1,37 @@
+# ─────────────── 前端 ───────────────
+node_modules/
+dist/
+*.local
+.vite/
+
+# ─────────────── Rust / Tauri ───────────────
+# target 实测 15.7 GB，绝对不能进仓库
+target/
+# tauri-build 每次构建都会重新生成的 schema
+src-tauri/gen/schemas/
+
+# ─────────────── 注意：随包的第三方可执行文件**要**提交 ───────────────
+# src-tauri/binaries/*.exe 是刻意入库的：
+#   - 保证本地开发与 CI 用的是同一个版本（可复现）
+#   - yt-dlp 的升级方式就是「换掉那个文件」，入库后一眼能看出钉的是哪一版
+# 代价是每次升级会让仓库多 17 MB 历史；介意的话可以改成由 workflow 下载，
+# 但那样就得额外维护一份版本号与校验和，见 binaries/README-third-party.md。
+
+# ─────────────── 开发期杂物 ───────────────
+# 本地联调用的抓包 / 测试素材，最大的有 20 MB
+_scratch/
+
+# 编辑器
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# 操作系统
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 日志
+*.log
+npm-debug.log*

@@ -1,0 +1,16 @@
+# 跨平台换行统一：仓库里一律 LF，检出时按平台处理。
+# 不设这个的话，Windows 上 git 会为每个文本文件刷一屏 "LF will be replaced by CRLF"。
+* text=auto eol=lf
+
+# 二进制必须显式标出来，绝不能被当文本处理
+*.exe binary
+*.png binary
+*.ico binary
+*.icns binary
+
+# Windows 脚本保留 CRLF，免得记事本里显示成一整行
+*.ps1 text eol=crlf
+
+# 锁文件不要做 diff（体积大、噪音大）
+Cargo.lock -diff
+package-lock.json -diff

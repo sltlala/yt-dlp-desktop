@@ -1,0 +1,24 @@
+[package]
+name = "ytdlp-core"
+description = "yt-dlp 命令行参数构造与输出解析：纯函数、可离线单测"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+# 上一行关闭文档测试，原因：
+#
+# `tauri-build` 会在 `target/debug/build/ytdlp-desktop-*/out/` 里生成一个
+# **82 字节的占位 `msvcrt.lib`**（真正的有 ~1MB）。同一 workspace 下跑
+# `cargo test` 时，该目录会通过 `/LIBPATH` 进入文档测试的链接命令行，
+# 于是 `/defaultlib:msvcrt` 解析到这个无效桩（link 报 LNK4003「无效的库格式」），
+# 结果是 `__CxxFrameHandler3` 等 C 运行时符号无法解析（LNK2019）。
+#
+# 单个包跑 `cargo test -p ytdlp-core --doc` 是正常的——只有 workspace 全量
+# 测试才会把 Tauri 的 LIBPATH 带进来。文档里的示例代码仍会正常渲染，
+# 其行为由 `url::tests` 覆盖。
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

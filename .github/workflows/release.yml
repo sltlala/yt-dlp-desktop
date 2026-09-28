@@ -1,0 +1,74 @@
+name: Release
+
+# 打一个 v* 的 tag 就会触发；也可以到 Actions 页面手动跑一次。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# tauri-action 要创建 Release，必须有写 contents 的权限。
+# 不加这段的话 GitHub 默认只给只读 token，会以 403 失败。
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # 目标只有一个：Windows NSIS 安装包。
+    # 想加别的平台就在这里加 matrix，但注意 externalBin 得按平台各准备一份。
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # 缓存 target/，否则每次都要从源码编译 SQLite（rusqlite 的 bundled 特性）
+      - name: 缓存 Rust 构建产物
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      # 先跑测试：打包出来的东西是要发给用户的，先确认没坏
+      - name: 核心层与外壳测试
+        run: cargo test
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # GitHub 自动注入的 token，不需要自己配 secret
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # 版本号取自 src-tauri/tauri.conf.json 的 version
+          tagName: v__VERSION__
+          releaseName: 'yt-dlp 下载器 v__VERSION__'
+          releaseBody: |
+            下载下面的 `*-setup.exe` 安装即可。
+
+            ### 随包分发的第三方程序
+
+            | 程序 | 版本 | 许可证 |
+            |---|---|---|
+            | yt-dlp | 见应用内「设置 → 下载器」 | Unlicense |
+            | aria2c | 见应用内「设置 → 下载器」 | **GPLv2**（许可证原文随安装包分发） |
+
+            aria2c 的源码：<https://github.com/aria2/aria2>
+            yt-dlp 的源码：<https://github.com/yt-dlp/yt-dlp>
+
+            Windows 会提示"未知发布者"，因为安装包没有代码签名证书。
+          # 先出草稿：自动打出来的包最好人工确认过再公开
+          releaseDraft: true
+          prerelease: false

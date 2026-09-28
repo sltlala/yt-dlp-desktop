@@ -1,0 +1,269 @@
+/* ───────────────────────── 主题 ─────────────────────────
+ *
+ * 亮色主题。设计上刻意克制：
+ *   - 只用**一层**边框 + 极浅投影做层次，不堆叠重阴影（那会显脏）
+ *   - 强调色只在「可操作 / 进行中」处出现，其余一律中性灰
+ *   - 语义色（成功/警告/失败）在亮底上要压暗，否则对比度不够、发飘
+ */
+
+:root {
+  /* 见 index.html 的说明：不声明的话深色系统下原生控件会是深色的 */
+  color-scheme: light;
+
+  /* 画布：主区纯白，侧栏与状态栏用极浅灰拉开层次 */
+  --bg: #ffffff;
+  --bg-elev: #fafbfc;
+
+  /* 面：卡片/输入框纯白，2 级用于 hover 与浅填充，3 级用于凹槽 */
+  --surface: #ffffff;
+  --surface-2: #f4f5f7;
+  --surface-3: #eaecf0;
+
+  --border: #e4e7ec;
+  --border-soft: #eef0f3;
+
+  --text: #101828;
+  --text-dim: #566072;
+  --text-mute: #8a94a3;
+
+  --accent: #3d6ef5;
+  --accent-hover: #2f5ce0;
+  --accent-dim: rgba(61, 110, 245, 0.09);
+  --accent-ink: #2b52c4;
+
+  /* 亮底上的语义色统一压暗一档 */
+  --ok: #0f8a45;
+  --warn: #b3690a;
+  --err: #d92d20;
+  --skip: #667085;
+
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+
+  /* ── 字号阶梯 ──
+   *
+   * 集中在这里，改一处就整体缩放，组件里不再写死 px。
+   *
+   * **一律取偶数**。原来的档位是 13.5 / 12.5 / 11.5 / 10.5，问题不只是小：
+   * 设备像素 = CSS 像素 × 缩放比，在 125%（Windows 笔记本很常见）下
+   * 13.5 → 16.875、11.5 → 14.375，落到半个设备像素上，字体光栅器只能凑合着画，
+   * 中文笔画粗细会变得不均匀——这才是「发虚」的主因，不是字体本身。
+   * 偶数档在 100% / 150% / 200% 下都是整数设备像素，125% 下 12 / 16 / 20 也是。
+   */
+  --fs-2xs: 12px; /* 角标、单位、极次要 */
+  --fs-xs: 14px; /* 次要信息：时间、路径、说明；表单标签 */
+  --fs-md: 16px; /* 正文、按钮、列表行 */
+  --fs-lg: 18px; /* 小标题 */
+  --fs-xl: 20px; /* 页面标题 */
+
+  /* 投影只用极浅的三档，靠边框而不是阴影分层 */
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-sm: 0 2px 6px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 24px 64px rgba(16, 24, 40, 0.18);
+
+  /* 行高按正文 15px 定：原来 76px 是配 13.5px 正文的，字号涨了要跟着涨 */
+  --row-h: 84px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI',
+    'Microsoft YaHei UI', 'PingFang SC', 'Hiragino Sans GB', Roboto, sans-serif;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  /*
+   * **不要设 `-webkit-font-smoothing: antialiased`。**
+   * 它在 macOS 上是让字变细变锐，但在 Windows 上会把 ClearType 的次像素
+   * 抗锯齿换成灰度抗锯齿——深色字压在白底上反而更糊。
+   * 这两个属性是从深色主题那版抄过来的，在 Windows 上是纯粹的负收益。
+   */
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+/* 焦点可见性：亮色主题下必须显式给，否则键盘用户完全看不出焦点 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 滚动条：窄、无边框、悬停才明显 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d5dae1;
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b9c1cc;
+  background-clip: content-box;
+}
+
+/* ───────────────────────── 通用件 ───────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-weight: 500;
+  box-shadow: var(--shadow-xs);
+  transition: background 0.13s, color 0.13s, border-color 0.13s, box-shadow 0.13s;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: #d7dce3;
+}
+.btn:active:not(:disabled) {
+  background: var(--surface-3);
+  box-shadow: none;
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(61, 110, 245, 0.35);
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: #fff;
+}
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--text-mute);
+}
+.btn.ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: transparent;
+  color: var(--text);
+}
+.btn.danger {
+  color: var(--err);
+}
+.btn.danger:hover:not(:disabled) {
+  background: rgba(217, 45, 32, 0.07);
+  border-color: rgba(217, 45, 32, 0.28);
+  color: var(--err);
+}
+.btn.sm {
+  padding: 4px 10px;
+  font-size: var(--fs-xs);
+  border-radius: var(--radius-xs);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.chip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.chip.downloading {
+  background: var(--accent-dim);
+  color: var(--accent-ink);
+}
+.chip.postprocessing {
+  background: rgba(179, 105, 10, 0.1);
+  color: var(--warn);
+}
+.chip.completed {
+  background: rgba(15, 138, 69, 0.1);
+  color: var(--ok);
+}
+.chip.skipped {
+  background: rgba(102, 112, 133, 0.1);
+  color: var(--skip);
+}
+.chip.failed {
+  background: rgba(217, 45, 32, 0.1);
+  color: var(--err);
+}
+.chip.paused,
+.chip.pending,
+.chip.queued,
+.chip.canceled {
+  background: rgba(102, 112, 133, 0.09);
+  color: var(--text-dim);
+}
+/* 待选择需要明显区别于「进行中」：它在等用户操作，不是在跑 */
+.chip.selecting {
+  background: rgba(124, 92, 255, 0.1);
+  color: #6d3fe0;
+}
+
+.mono {
+  font-family: 'Cascadia Mono', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: var(--fs-xs);
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  color: var(--text-mute);
+  text-align: center;
+}

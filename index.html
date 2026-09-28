@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      亮色主题**必须**声明 color-scheme：
+      系统处于深色模式时，原生控件（滚动条、<select> 下拉、checkbox、
+      date picker）会跟着渲染成深色，在白色页面上非常突兀。
+    -->
+    <meta name="color-scheme" content="light" />
+    <!-- 内联 SVG 图标，省掉一个 404 请求；配色与侧栏 logo 一致 -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%233d6ef5'/%3E%3Ctext x='16' y='22' font-family='Segoe UI,sans-serif' font-size='15' font-weight='700' fill='%23fff' text-anchor='middle'%3Eyt%3C/text%3E%3C/svg%3E"
+    />
+    <title>yt-dlp 下载器</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

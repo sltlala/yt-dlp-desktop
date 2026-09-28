@@ -1,0 +1,40 @@
+[package]
+name = "ytdlp-desktop"
+description = "基于 yt-dlp 的桌面下载工具（Tauri 2 外壳）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "ytdlp_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ytdlp-core = { path = "../crates/ytdlp-core" }
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "rt", "rt-multi-thread", "sync", "time"] }
+# 自更新用的最小 HTTP 客户端。
+# 刻意不用 reqwest：只需要「一次 JSON GET + 一次文件下载」，
+# ureq 的依赖树小一个数量级，且自带 rustls 不需要 OpenSSL。
+ureq = { version = "2.10", features = ["json"] }
+# 任务持久化。用 bundled 特性从源码编译 SQLite——
+# 免得依赖系统里恰好装了哪个版本的 sqlite3.dll。
+rusqlite = { version = "0.32", features = ["bundled"] }
+# 解码 yt-dlp 的控制台输出。它按系统代码页（本机 GBK）写 stderr，
+# 且不受 PYTHONIOENCODING 影响，所以需要能按 GBK 解码。
+encoding_rs = "0.8"
+# 选择文件夹 / 文件用的**原生**对话框。
+#
+# 为什么不用 `tauri-plugin-dialog`：那要同时加一个 npm 包、一个 crate，
+# 还得往 `capabilities/` 里加权限；这里只需要「弹个对话框拿一个绝对路径」，
+# 直接开一个命令更省事。前端也仍然走现有的 `invoke` 一套。
+#
+# ⚠️ 目录选择**没有**纯 Web 的替代方案：`<input type="file" webkitdirectory>`
+# 只给相对路径（拿不到绝对路径），那是 Electron 才有 `File.path`。
+# 所以这个依赖是必需的，不是图省事。
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
