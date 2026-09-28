@@ -134,6 +134,37 @@ unhandled rejection——表现是「**粘贴链接后添加任务毫无反应**
 所以 `src/stores/tasks.ts` 现在把错误存进 `lastError` 并在界面上显示横幅，
 事件通道不可用时还会**降级为轮询**。
 
+## 打包与发布
+
+**打一个 `v*` 的 tag 就会自动出 Release**（`.github/workflows/release.yml`）：
+
+```bash
+# 先把 tauri.conf.json 里的 version 改好，然后
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+流程会跑测试 + 类型检查，再用 `tauri-apps/tauri-action` 构建 NSIS 安装包并挂到
+Release 上。**默认出草稿**——自动打出来的包人工确认过再公开比较稳妥。
+
+也可以到 Actions 页面手动触发一次（`workflow_dispatch`）。
+
+> 安装包没有代码签名证书，Windows 会提示「未知发布者」，点「仍要运行」即可。
+
+## 许可证
+
+本仓库**自己的代码**采用 **GPL-3.0**（见 [`LICENSE`](LICENSE)）。
+
+随包分发的第三方程序**各自独立**，不是本作品的一部分：
+
+| 程序 | 版本 | 许可证 | 源码 |
+|---|---|---|---|
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | 2026.07.04 | Unlicense（公有领域） | 同左 |
+| [aria2](https://github.com/aria2/aria2) | 1.37.0 | **GPL-2.0** | 同左 |
+
+aria2c 的许可证原文随安装包一起分发（`bundle.resources`），
+详见 [`src-tauri/binaries/README-third-party.md`](src-tauri/binaries/README-third-party.md)。
+
 ## 已验证的环境
 
 yt-dlp `2026.07.04` · ffmpeg 8.0.1 · aria2c 1.37.0 · Rust 1.95 · Node 22.23.3 · .NET 10（未使用）
