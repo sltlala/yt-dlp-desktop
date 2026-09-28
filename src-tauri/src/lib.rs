@@ -268,6 +268,12 @@ fn get_settings(state: State<AppState>) -> Value {
 
 #[tauri::command]
 fn save_settings(state: State<AppState>, settings: Value) -> Result<(), String> {
+    // ⚠️ 归一化后再落内存和磁盘。`get_settings` 是归一化过的，如果保存路径
+    // 不归一化，「读到的」和「存进去的」就会不一致：新增设置键时前端拿到的是
+    // `undefined`（历史上就是这样把整个设置面板打成白屏的）。
+    // 这里也保证了 `normalize_settings` 里清掉的废弃键不会又被写回去。
+    let settings = normalize_settings(settings);
+
     if let Ok(mut s) = state.settings.lock() {
         *s = settings.clone();
     }
