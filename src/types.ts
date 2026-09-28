@@ -102,6 +102,16 @@ export interface Task {
   progress: Progress
   /** 已落地的最终文件路径。 */
   filepath: string | null
+  /**
+   * **预估**下载大小（字节），探测后就有。
+   *
+   * 来自 yt-dlp 的 `requested_downloads`——按当前 `-f` 表达式实际会选中的
+   * 那几条格式之和。`null` 表示拿不到（例如扁平播放列表），
+   * 界面要显示「未知」而不是 0。
+   */
+  sizeEstimate: number | null
+  /** **实际**成品大小（字节），下载结束后从磁盘读。 */
+  sizeActual: number | null
   /** `-f` 表达式（当前生效的那个）。**存表达式而非 format_id**（DESIGN §3）。 */
   formatExpression: string
   /**

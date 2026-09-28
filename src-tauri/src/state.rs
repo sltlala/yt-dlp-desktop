@@ -41,6 +41,18 @@ pub struct Task {
     pub skip_reason: Option<String>,
     pub progress: Progress,
     pub filepath: Option<String>,
+    /// **预估**下载大小（字节），探测后就有。
+    ///
+    /// 来自 yt-dlp 的 `requested_downloads`——即按当前 `-f` 表达式**实际会选中**
+    /// 的那几条格式，体积由 yt-dlp 加好。拿不到时为 `None`（例如扁平播放列表），
+    /// 界面必须显示「未知」而不是 0。
+    #[serde(default)]
+    pub size_estimate: Option<u64>,
+    /// **实际**成品大小（字节），下载结束后从磁盘读。
+    ///
+    /// 不复用进度里的 `total`：那是预估，而且合并/嵌入字幕后成品会变大。
+    #[serde(default)]
+    pub size_actual: Option<u64>,
     /// 界面展示用的 `-f` 表达式（等价于「当前生效的」那个）。
     pub format_expression: String,
     /// 用户在「可用格式」里**显式选定**的表达式。
@@ -93,6 +105,8 @@ impl Task {
             skip_reason: None,
             progress: Progress::default(),
             filepath: None,
+            size_estimate: None,
+            size_actual: None,
             format_expression,
             format_override: None,
             container: "mp4".into(),

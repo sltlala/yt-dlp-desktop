@@ -263,6 +263,9 @@ class MockBackend {
       skipReason: null,
       progress: { downloaded: null, total: null, speed: null, eta: null },
       filepath: null,
+      // 刚建的任务还没探测，大小未知
+      sizeEstimate: null,
+      sizeActual: null,
       formatExpression: 'bv*+ba/b',
       container: 'mkv',
       outputDir: this.settings.outputDir,

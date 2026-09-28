@@ -118,6 +118,8 @@ yt-dlp 有两种发行形态，**只有一种能直接放进 `externalBin`**：
 | **`-S`/`--format-sort` 是整体替换默认排序，不是追加** | `-S acodec:aac` 之后分辨率不再参与比较，1080p 的 `137` 会输给 360p 的 `18`——只想换个音频编码，画质静默塌掉 | 编码偏好用 `-f` 过滤器实现（`bv*[vcodec^=avc1]+ba[acodec^=mp4a]/…`），默认排序原封不动（DESIGN §3.3） |
 | **编码名要用 yt-dlp 报出的那套** | `h264`、`aac` 这两个「熟悉的叫法」匹配不上任何东西，且**不报错**，只是静默退化成没有偏好 | 写 `avc1`（实际报 `avc1.640028`）、`mp4a`（实际报 `mp4a.40.2`）；选择项由后端白名单生成 |
 | **非法的 `-f` 过滤器让 yt-dlp 直接崩** | `[vcodec@=x]`、`[vcodec^=]`、`~=` 都会抛 `SyntaxError: Invalid filter specification` + Python traceback，非零退出 | 任何进 `-f` 的用户输入都过白名单（`CodecPreference::sanitized`） |
+| **带 `-f` 的探测会因表达式不可满足而整体失败** | `--dump-single-json -f <不可满足>` 直接 exit=1、**连 JSON 都没有**，元数据与格式表全丢 | 带 `-f` 探一次，失败就**不带 `-f` 再探一次**（预估大小可以让步，格式表不能让）——DESIGN §15.2 |
+| **预估大小只能取自 `requested_downloads`** | 它是 yt-dlp 按当前 `-f` 真正选中的格式、且体积**已加好**；自己在宿主侧推算等于重写一遍选择器 | 探测时带 `-f`（实测 `formats` 仍完整）；合并选择的值落在 `filesize_approx`，单条才可能给 `filesize` |
 | **归档文件有 BOM 时首行静默失效** | yt-dlp 用 `encoding='utf-8'` 读归档，**不认 BOM**；首行比对失败 → 该视频被重新下载。后面几行正常，所以很难发现 | 宿主读写归档都去 BOM、写回不写 BOM（DESIGN §12.1）；手工修归档别用 `Out-File -Encoding utf8` |
 | **Windows PowerShell 5.1 的 `Get-Content -Raw` 按 ANSI 读 UTF-8** | 读改写一次就把整个文件的中文变成乱码，且**不可逆** | 改文件一律用编辑工具；确要用脚本时显式 `[System.IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` |
 | **`Out-File -Encoding utf8` 在 5.1 里写 BOM** | 不只是编码问题：把 JSON 发给 GitHub API 会 `Problems parsing JSON`，给 yt-dlp 的归档会废掉首行 | 生成给机器读的文件用 `[System.IO.File]::WriteAllText($p, $s, [Text.UTF8Encoding]::new($false))` |

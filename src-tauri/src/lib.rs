@@ -650,7 +650,10 @@ async fn probe_formats(
     let cookie = runner::cookies_of(&settings);
     let js = runner::js_of(&settings);
 
-    let args = ytdlp_core::build_probe_args(&url, proxy.as_deref(), cookie.as_ref(), false, &js);
+    // 这里只为了拿格式表，不需要预估大小（`None` = 不传 `-f`）。
+    // 表达式不可满足时会让整个探测失败，这条路径没必要冒那个险。
+    let args =
+        ytdlp_core::build_probe_args(&url, proxy.as_deref(), cookie.as_ref(), false, &js, None);
     let out = tokio::process::Command::new(exe)
         .args(&args)
         .env("PYTHONIOENCODING", "utf-8")

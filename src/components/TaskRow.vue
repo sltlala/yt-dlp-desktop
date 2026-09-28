@@ -149,6 +149,7 @@ const canOpen = computed(() => !!t.value.filepath)
           </template>
           <template v-else-if="t.state === 'completed'">
             <span class="muted">{{ shortenPath(t.filepath ?? '', 1) }}</span>
+            <span v-if="t.sizeActual" class="size">{{ fmtBytes(t.sizeActual) }}</span>
           </template>
           <template v-else-if="t.state === 'paused'">
             <span class="muted"
@@ -160,10 +161,13 @@ const canOpen = computed(() => !!t.value.filepath)
             <span class="select-text">
               探测到 {{ t.playlistEntries?.length ?? 0 }} 集，展开后可选择要下载哪几集
             </span>
+            <span v-if="t.sizeEstimate" class="size">预估 {{ fmtBytes(t.sizeEstimate) }}</span>
           </template>
           <!-- 排队/探测中：显示调度器给的提示，避免看起来像卡住 -->
           <template v-else-if="t.state === 'probing' || t.state === 'queued' || t.state === 'pending'">
             <span class="muted">{{ t.queueHint ?? TASK_STATE_LABEL[t.state] }}</span>
+            <!-- 探测一完成就有预估大小，此刻正是用户最想知道「要下多少」的时候 -->
+            <span v-if="t.sizeEstimate" class="size">预估 {{ fmtBytes(t.sizeEstimate) }}</span>
           </template>
           <template v-else>
             <span class="muted">
@@ -172,6 +176,10 @@ const canOpen = computed(() => !!t.value.filepath)
             <span class="muted" v-if="fraction !== null">{{ (fraction * 100).toFixed(1) }}%</span>
             <span class="speed" v-if="t.progress.speed">{{ fmtSpeed(t.progress.speed) }}</span>
             <span class="muted" v-if="t.progress.eta !== null">{{ fmtEta(t.progress.eta) }}</span>
+            <!-- 进度里报不出总大小时（部分站点 / aria2c），退回顾探测到的预估 -->
+            <span v-if="!t.progress.total && t.sizeEstimate" class="size">
+              预估 {{ fmtBytes(t.sizeEstimate) }}
+            </span>
           </template>
         </div>
       </div>
@@ -399,6 +407,14 @@ const canOpen = computed(() => !!t.value.filepath)
   color: var(--accent);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+}
+/* 文件大小：表格数字宽度固定，多个任务的数字才能对齐 */
+.size {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  border-left: 1px solid var(--border);
+  padding-left: 8px;
 }
 .post-text {
   color: var(--warn);

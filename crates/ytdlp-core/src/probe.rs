@@ -98,6 +98,12 @@ pub struct MediaInfo {
     pub formats: Vec<FormatInfo>,
     /// 可用字幕语言，供设置页提示「该视频有哪些字幕」。
     pub subtitle_langs: Vec<String>,
+    /// **预估**下载大小（字节），来自 `requested_downloads`。
+    ///
+    /// 只有探测时传了 `-f` 才有值：yt-dlp 会把**实际选中的那几条格式**放进
+    /// `requested_downloads`，并把它们的体积**加好**（`bv*+ba` → 视频+音频之和）。
+    /// 空表示这个站点/表达式拿不到（例如扁平播放列表）。
+    pub size_estimate: Option<u64>,
 }
 
 fn as_str(v: &Value, k: &str) -> Option<String> {
@@ -219,6 +225,30 @@ fn parse_subtitle_langs(v: &Value) -> Vec<String> {
     langs
 }
 
+/// 预估下载大小。
+///
+/// 实测形状（`-f bv*+ba/b`、视频轨 `filesize_approx` + 音频轨 `filesize`）：
+///
+/// ```json
+/// "requested_downloads": [{ "format_id": "248+251", "filesize": null,
+///                           "filesize_approx": 63600000 }]
+/// ```
+///
+/// 两个要点：
+/// - **合并选择一律落在 `filesize_approx`**，哪怕每一条都有精确 `filesize`；
+///   单条选择才可能给 `filesize`。所以先取 `filesize`、再回落 `filesize_approx`。
+/// - 数组可能有多项（播放列表条目），这里**求和**；单视频通常只有一项。
+fn parse_size_estimate(v: &Value) -> Option<u64> {
+    let arr = v.get("requested_downloads").and_then(|x| x.as_array())?;
+    let total: u64 = arr
+        .iter()
+        .filter_map(|d| as_u64(d, "filesize").or_else(|| as_u64(d, "filesize_approx")))
+        .sum();
+    // 全都没有体积信息时给 None，而不是 0——0 会被界面显示成「0 B」，
+    // 那是在撒谎（真实情况是「不知道」）。
+    (total > 0).then_some(total)
+}
+
 /// 解析 `--dump-single-json` 的输出。
 pub fn parse_info_json(json: &str) -> Result<MediaInfo, String> {
     let v: Value = serde_json::from_str(json).map_err(|e| format!("JSON 解析失败：{e}"))?;
@@ -247,6 +277,7 @@ pub fn parse_info_json(json: &str) -> Result<MediaInfo, String> {
         entries,
         formats: parse_formats(&v),
         subtitle_langs: parse_subtitle_langs(&v),
+        size_estimate: parse_size_estimate(&v),
     })
 }
 
@@ -294,6 +325,71 @@ mod tests {
         // ⚠️ generic 直链文件两路编码都是 none，**不能**因此被当成 storyboard 滤掉，
         // 也不能被当成「仅视频」而配上一条不存在的音轨。
         assert_eq!(m.formats[0].kind(), FormatKind::Muxed);
+        // 这个 JSON 没有 requested_downloads（探测时没传 -f）→ 预估大小未知，
+        // **不能是 0**：界面会把 0 显示成「0 B」，那是在撒谎。
+        assert_eq!(m.size_estimate, None);
+    }
+
+    /// 预估大小取自已实测的 `requested_downloads` 形状。
+    ///
+    /// ⚠️ 实测：**合并选择一律落在 `filesize_approx`**，哪怕每一条都有精确
+    /// `filesize`（`-f 137+140`，两条都有精确值，合计仍报在 `filesize_approx`）。
+    /// 单条选择才可能给 `filesize`（`-f ba/b` → 251 给的是 `filesize`）。
+    /// 所以必须两个都认，且优先精确值。
+    #[test]
+    fn parses_size_estimate_from_requested_downloads() {
+        // 合并选择：合计在 filesize_approx
+        let merged = r#"{
+          "_type": "video", "id": "x", "title": "x", "extractor_key": "Youtube",
+          "webpage_url": "https://example.com/x",
+          "formats": [{"format_id": "137", "ext": "mp4", "vcodec": "avc1", "acodec": "none"}],
+          "requested_downloads": [
+            {"format_id": "137+140", "filesize": null, "filesize_approx": 93400000}
+          ]
+        }"#;
+        assert_eq!(
+            parse_info_json(merged).unwrap().size_estimate,
+            Some(93_400_000)
+        );
+
+        // 单条选择：给的是精确 filesize
+        let single = r#"{
+          "_type": "video", "id": "x", "title": "x", "extractor_key": "Youtube",
+          "webpage_url": "https://example.com/x",
+          "formats": [{"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus"}],
+          "requested_downloads": [
+            {"format_id": "251", "filesize": 3600000, "filesize_approx": null}
+          ]
+        }"#;
+        assert_eq!(parse_info_json(single).unwrap().size_estimate, Some(3_600_000));
+
+        // 多项（播放列表条目）求和
+        let many = r#"{
+          "_type": "video", "id": "x", "title": "x", "extractor_key": "Youtube",
+          "webpage_url": "https://example.com/x", "formats": [],
+          "requested_downloads": [
+            {"format_id": "a", "filesize": 1000},
+            {"format_id": "b", "filesize": 2000},
+            {"format_id": "c", "filesize_approx": 3000}
+          ]
+        }"#;
+        assert_eq!(parse_info_json(many).unwrap().size_estimate, Some(6000));
+
+        // 体积全都未知 → None（不是 0）
+        let unknown = r#"{
+          "_type": "video", "id": "x", "title": "x", "extractor_key": "Youtube",
+          "webpage_url": "https://example.com/x", "formats": [],
+          "requested_downloads": [{"format_id": "a", "filesize": null}]
+        }"#;
+        assert_eq!(parse_info_json(unknown).unwrap().size_estimate, None);
+
+        // 精确值优先于近似值
+        let both = r#"{
+          "_type": "video", "id": "x", "title": "x", "extractor_key": "Youtube",
+          "webpage_url": "https://example.com/x", "formats": [],
+          "requested_downloads": [{"format_id": "a", "filesize": 111, "filesize_approx": 999}]
+        }"#;
+        assert_eq!(parse_info_json(both).unwrap().size_estimate, Some(111));
     }
 
     /// storyboard（`ext: mhtml`）不是可下载的媒体，必须滤掉。

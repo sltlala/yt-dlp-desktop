@@ -502,12 +502,21 @@ pub fn format_expression_for(
 /// `flat_playlist` 建议传 `true`：实测 `--flat-playlist` 用在**单个视频**上
 /// 同样会返回完整的 `formats`，所以一次探测就能同时覆盖两种情况——
 /// 播放列表得到扁平条目供勾选，单视频得到格式表（DESIGN §9）。
+///
+/// `format` 是**预估大小**的来源：只有传了 `-f`，yt-dlp 才会在 JSON 里给出
+/// `requested_downloads`（实际选中的格式及其合计体积）。实测传了 `-f` 之后
+/// `formats` 数组**依然是完整的**，所以格式表不受影响。
+///
+/// ⚠️ 但表达式**不可满足时整个探测会失败**（`Requested format is not available`，
+/// exit=1，连 JSON 都没有）。调用方必须准备好不带 `-f` 的重试，见
+/// `runner::run_probe`。
 pub fn build_probe_args(
     url: &str,
     proxy: Option<&str>,
     cookies: Option<&CookieSource>,
     flat_playlist: bool,
     js: &JsRuntimeOptions,
+    format: Option<&str>,
 ) -> Vec<String> {
     let mut a: Vec<String> = vec![
         "--dump-single-json".into(),
@@ -525,6 +534,11 @@ pub fn build_probe_args(
         a.push("--flat-playlist".into());
     } else {
         a.push("--no-playlist".into());
+    }
+
+    if let Some(f) = format.map(str::trim).filter(|f| !f.is_empty()) {
+        a.push("--format".into());
+        a.push(f.to_string());
     }
 
     // 探测阶段同样要 JS 运行时——否则拿到的就是降级结果
@@ -1067,6 +1081,7 @@ mod tests {
             Some(&c),
             false,
             &JsRuntimeOptions::default(),
+            None,
         );
         assert!(a.contains(&"--cookies".to_string()));
         assert!(a.contains(&"http://127.0.0.1:7897".to_string()));
@@ -1077,7 +1092,14 @@ mod tests {
     /// DESIGN §9：播放列表先取扁平列表供勾选。
     #[test]
     fn probe_flat_playlist_switches_flag() {
-        let a = build_probe_args("https://x", None, None, true, &JsRuntimeOptions::default());
+        let a = build_probe_args(
+            "https://x",
+            None,
+            None,
+            true,
+            &JsRuntimeOptions::default(),
+            None,
+        );
         assert!(a.contains(&"--flat-playlist".to_string()));
         assert!(!a.contains(&"--no-playlist".to_string()));
     }
@@ -1093,6 +1115,7 @@ mod tests {
             None,
             false,
             &JsRuntimeOptions::default(),
+            None,
         );
         assert!(p.contains(&"socks5://127.0.0.1:1080".to_string()));
     }
@@ -1161,7 +1184,7 @@ mod tests {
     #[test]
     fn js_runtimes_wired_into_probe_args() {
         let js = JsRuntimeOptions::new(vec!["node".into()], false);
-        let a = build_probe_args("https://x", None, None, true, &js);
+        let a = build_probe_args("https://x", None, None, true, &js, None);
         let i = a.iter().position(|x| x == "--js-runtimes").unwrap();
         assert_eq!(a[i + 1], "node");
         // 探测阶段必须也有——否则拿到的是降级结果
@@ -1195,8 +1218,34 @@ mod tests {
         assert!(!a.contains(&"--remote-components".to_string()));
 
         let js = JsRuntimeOptions::default();
-        let p = build_probe_args("https://x", None, None, false, &js);
+        let p = build_probe_args("https://x", None, None, false, &js, None);
         assert!(!p.contains(&"--js-runtimes".to_string()));
+    }
+
+    /// 探测带 `-f` 是为了让 yt-dlp 在 JSON 里给出 `requested_downloads`
+    /// （即预估大小的来源）。空/空白表达式视为「不传」，免得产出非法的 `-f`。
+    #[test]
+    fn probe_passes_format_only_when_given() {
+        let none = build_probe_args("https://x", None, None, true, &JsRuntimeOptions::default(), None);
+        assert!(!none.contains(&"--format".to_string()));
+
+        let blank = build_probe_args(
+            "https://x", None, None, true, &JsRuntimeOptions::default(), Some("   "),
+        );
+        assert!(!blank.contains(&"--format".to_string()), "空白不能变成空的 -f");
+
+        let a = build_probe_args(
+            "https://x",
+            None,
+            None,
+            true,
+            &JsRuntimeOptions::default(),
+            Some("bv*+ba/b"),
+        );
+        let i = a.iter().position(|x| x == "--format").unwrap();
+        assert_eq!(a[i + 1], "bv*+ba/b");
+        // 表达式必须落在 URL 之前，且 URL 前仍有 `--` 分隔
+        assert!(i < a.iter().position(|x| x == "--").unwrap());
     }
 
     /// `--remote-components` 默认关闭：官方 exe 不需要它，且实测会慢 40 秒。

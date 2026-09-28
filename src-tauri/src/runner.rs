@@ -132,6 +132,18 @@ fn update<F: FnOnce(&mut Task)>(app: &AppHandle, id: &str, f: F) {
     refresh(app);
 }
 
+/// 追加一条告警（去重）并广播。
+///
+/// 告警是任务详情里唯一能看到「出了什么事」的地方；同一条重复堆叠只会淹掉别的。
+fn push_warning(app: &AppHandle, id: &str, msg: impl Into<String>) {
+    let msg = msg.into();
+    update(app, id, |t| {
+        if !t.warnings.contains(&msg) {
+            t.warnings.push(msg);
+        }
+    });
+}
+
 /// 终止进程树。
 ///
 /// ffmpeg 是 yt-dlp 的子进程，只杀父进程会留下它占着输出文件句柄，
@@ -172,12 +184,11 @@ fn prepare_aria2c(app: &AppHandle, task_id: &str, spec: &mut DownloadSpec) -> Op
         Some(p) => p.parent().map(PathBuf::from),
         None => {
             spec.aria2c = false;
-            let msg = "未找到可用的 aria2c，本次改用内置下载器（速度可能慢一些）".to_string();
-            update(app, task_id, |t| {
-                if !t.warnings.contains(&msg) {
-                    t.warnings.push(msg);
-                }
-            });
+            push_warning(
+                app,
+                task_id,
+                "未找到可用的 aria2c，本次改用内置下载器（速度可能慢一些）",
+            );
             None
         }
     }
@@ -314,6 +325,16 @@ pub async fn run_download(app: AppHandle, task_id: String) {
         if let Some(p) = filepath {
             t.filepath = Some(p);
         }
+        // 实际大小**以磁盘为准**。
+        //
+        // ⚠️ 不能图省事复用进度里的 `total`：那是下载前的**预估**，
+        // 而合并音视频轨、嵌入字幕/缩略图之后成品会变大，两者经常对不上。
+        let actual = t
+            .filepath
+            .as_deref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len());
+        t.size_actual = actual;
         if canceled {
             t.state = "canceled".into();
         } else if code == 0 {
@@ -606,16 +627,16 @@ pub fn cookies_of(settings: &Value) -> Option<CookieSource> {
 /// 探测与下载是**两个独立并发池**（DESIGN §4），由 `scheduler` 分别调度。
 /// Cookie 与代理在此阶段就必须生效——很多站点不登录连元数据都拿不到。
 pub async fn run_probe(app: AppHandle, task_id: String) {
-    let (url, settings) = {
+    let (url, settings, format_override) = {
         let state = app.state::<AppState>();
         let settings = state.settings.lock().map(|s| s.clone()).unwrap_or(Value::Null);
-        let url = state
-            .tasks
-            .lock()
-            .ok()
-            .and_then(|t| t.iter().find(|x| x.id == task_id).map(|x| x.url.clone()));
-        match url {
-            Some(u) => (u, settings),
+        let found = state.tasks.lock().ok().and_then(|t| {
+            t.iter()
+                .find(|x| x.id == task_id)
+                .map(|x| (x.url.clone(), x.format_override.clone()))
+        });
+        match found {
+            Some((u, f)) => (u, settings, f),
             None => return,
         }
     };
@@ -654,22 +675,84 @@ pub async fn run_probe(app: AppHandle, task_id: String) {
     update(&app, &task_id, |t| {
         t.state = "probing".into();
         t.error = None;
+        // 告警描述的是**上一次**尝试的结果（后处理失败、上次的格式表达式不可用……），
+        // 探测开始意味着新一轮尝试，留着旧的会让人以为是刚发生的事。
+        t.warnings.clear();
         t.queue_hint = Some("正在解析".into());
     });
+
+    // 探测用的表达式必须与**下载时**完全一致，否则预估大小对不上实际下载。
+    // 所以走同一组读取器（`spec_from_settings` + 任务级 override）。
+    let expression = {
+        let mut spec = spec_from_settings(&settings, &url, &task_id);
+        spec.format_override = format_override;
+        spec.effective_format_expression()
+    };
 
     // `--flat-playlist`：实测在单个视频上同样返回完整的 formats，
     // 所以一次探测同时覆盖「单视频」与「播放列表」两种情况。
     // JS 运行时在探测阶段同样必需——否则拿到的就是降级结果。
-    let js = js_of(&settings);
+    //
+    // 带上 `-f` 是为了拿 `requested_downloads`（预估大小）。实测带 `-f` 时
+    // `formats` 数组依然完整，格式表不受影响。
+    let info = match probe_once(&exe, &url, &settings, Some(&expression)).await {
+        Ok(i) => i,
+        Err(first) => {
+            // ⚠️ 表达式不可满足时 yt-dlp **整个探测都会失败**（exit=1，连 JSON 都不给）。
+            // 预估大小可以让步，元数据与格式表不能让——退回不带 `-f` 再探一次。
+            match probe_once(&exe, &url, &settings, None).await {
+                Ok(i) => {
+                    // 只有确认是「格式不可用」才告警：如果是偶发网络抖动导致的失败，
+                    // 提示「你的格式表达式不可用」就是误导。
+                    if first.format_unavailable {
+                        push_warning(
+                            &app,
+                            &task_id,
+                            format!(
+                                "无法按当前格式表达式预估大小——该表达式对这个站点不可用，\
+                                 下载时很可能同样失败。表达式：{expression}"
+                            ),
+                        );
+                    }
+                    i
+                }
+                Err(second) => {
+                    fail(&app, &task_id, &second.message);
+                    return;
+                }
+            }
+        }
+    };
+
+    apply_info(&app, &task_id, &url, info);
+}
+
+/// 一次探测的失败信息。
+struct ProbeFailure {
+    /// 已经过 `classify_error` 的、可直接展示给用户的文本。
+    message: String,
+    /// 失败原因是「所选格式不可用」——用于区分「用户的表达式有问题」和偶发故障。
+    format_unavailable: bool,
+}
+
+/// 跑一次探测。`format` 为 `Some` 时会带上 `-f`，从而拿到预估大小。
+async fn probe_once(
+    exe: &std::path::Path,
+    url: &str,
+    settings: &Value,
+    format: Option<&str>,
+) -> Result<ytdlp_core::MediaInfo, ProbeFailure> {
+    let js = js_of(settings);
     let args = ytdlp_core::build_probe_args(
-        &url,
-        proxy_for(&settings, &url).as_deref(),
-        cookies_of(&settings).as_ref(),
+        url,
+        proxy_for(settings, url).as_deref(),
+        cookies_of(settings).as_ref(),
         true,
         &js,
+        format,
     );
 
-    let out = tokio::process::Command::new(&exe)
+    let out = tokio::process::Command::new(exe)
         .args(&args)
         .stdin(Stdio::null())
         .env("PYTHONIOENCODING", "utf-8")
@@ -677,29 +760,26 @@ pub async fn run_probe(app: AppHandle, task_id: String) {
         .output()
         .await;
 
-    let info = match out {
+    match out {
         Ok(o) if o.status.success() => {
             let json = crate::text::decode_console(&o.stdout);
-            match ytdlp_core::parse_info_json(&json) {
-                Ok(i) => i,
-                Err(e) => {
-                    fail(&app, &task_id, &format!("探测结果解析失败：{e}"));
-                    return;
-                }
-            }
+            ytdlp_core::parse_info_json(&json).map_err(|e| ProbeFailure {
+                message: format!("探测结果解析失败：{e}"),
+                format_unavailable: false,
+            })
         }
         Ok(o) => {
             let raw = crate::text::decode_console(&o.stderr);
-            fail(&app, &task_id, &classify_error(&raw, o.status.code()));
-            return;
+            Err(ProbeFailure {
+                message: classify_error(&raw, o.status.code()),
+                format_unavailable: raw.contains("Requested format is not available"),
+            })
         }
-        Err(e) => {
-            fail(&app, &task_id, &format!("无法启动 yt-dlp：{e}"));
-            return;
-        }
-    };
-
-    apply_info(&app, &task_id, &url, info);
+        Err(e) => Err(ProbeFailure {
+            message: format!("无法启动 yt-dlp：{e}"),
+            format_unavailable: false,
+        }),
+    }
 }
 
 /// 写入进度。
@@ -810,6 +890,9 @@ fn apply_info(app: &AppHandle, task_id: &str, url: &str, info: ytdlp_core::Media
             t.thumbnail = info.thumbnail.clone();
             t.duration_sec = info.duration;
             t.subtitle_langs = info.subtitle_langs.clone();
+            // 预估大小：探测时带了 `-f`，yt-dlp 会给出实际选中格式的合计体积。
+            // 拿不到就是 `None`——界面必须显示「未知」，不能显示 0。
+            t.size_estimate = info.size_estimate;
             // 格式表可能很长（播放列表里每个条目都有自己的），截断避免数据库膨胀
             t.formats = info.formats.iter().take(120).cloned().collect();
             if is_playlist {

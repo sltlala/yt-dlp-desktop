@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import type { Task } from '../types'
 import { useTaskStore } from '../stores/tasks'
-import { ellipsizePath, fmtTime, shortenPath } from '../utils'
+import { ellipsizePath, fmtBytes, fmtTime, shortenPath } from '../utils'
 import FormatPicker from './FormatPicker.vue'
 import PlaylistPicker from './PlaylistPicker.vue'
 
@@ -57,6 +57,18 @@ const rows = computed(() => {
       display: file ? ellipsizePath(file, 84) : '—',
       hint: file ? '双击行可打开' : undefined,
       mono: true,
+    },
+    {
+      k: '预估大小',
+      v: t.value.sizeEstimate ? fmtBytes(t.value.sizeEstimate) : '—',
+      hint:
+        '由解析结果推算：按当前格式表达式实际会选中的音视频轨体积之和。' +
+        '合并、嵌入字幕/缩略图后成品通常会更大。',
+    },
+    {
+      k: '实际大小',
+      v: t.value.sizeActual ? fmtBytes(t.value.sizeActual) : '—',
+      hint: t.value.sizeActual ? '下载完成后的成品文件大小（读自磁盘）' : '下载完成后才有',
     },
     {
       k: '进度来源',

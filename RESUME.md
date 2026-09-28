@@ -200,6 +200,9 @@ cargo test               # 核心层 + 外壳
 | **`-S` 做编码偏好会连分辨率一起丢掉** | `-S` **整体替换**默认排序，不是追加；`-S acodec:aac` + `-f bv*+ba/b` 实测选中 360p 的 `18`（本该 1080p）——用户只想换音频编码，画质静默塌掉 | 改用 `-f` 过滤器链（DESIGN §3.3），`preset_expression_with` 有单测，生成结果逐条对 yt-dlp 实测过 |
 | **`h264` / `aac` 匹配不上 yt-dlp 的任何格式** | 实测 `[vcodec^=h264]`、`[acodec^=aac]` 都静默落空，得写 `avc1` / `mp4a`（实际报 `avc1.640028` / `mp4a.40.2`）；不报错，只是没有偏好 | 选择项由 `codec_choices` 从 Rust 白名单生成，前端不另写一份 |
 | **非法 `-f` 过滤器让 yt-dlp 直接崩** | `[vcodec@=x]`、`[vcodec^=]`、`~=` 都抛 `SyntaxError: Invalid filter specification` + Python traceback | `CodecPreference::sanitized` 白名单把关，界面值不进 `-f` |
+| **带 `-f` 的探测会整体失败** | 表达式不可满足时 `--dump-single-json -f ...` 直接 exit=1、**连 JSON 都没有**，元数据和格式表一起丢 | `run_probe` 带 `-f` 失败后**不带 `-f` 重探一次**；只有确认是 format unavailable 才告警（DESIGN §15.2） |
+| **合并选择的体积记在 `filesize_approx`** | 实测 `-f 137+140`（两条都有精确 `filesize`）合计仍只在 `filesize_approx`；单条选择才给 `filesize` | 两个都认、精确值优先；全未知给 `None` 而非 0 |
+| **YouTube 同一链接的格式集会变** | 连续探测：一次 11 条 HLS（**全无体积**），一次 5 条含 DASH（`filesize_approx: 16637201`）。所以预估值可能整块缺失 | 界面显示「—」是正常结果，不是 bug；不要为此加兜底数字 |
 
 ## 测试资源
 
