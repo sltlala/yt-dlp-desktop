@@ -193,6 +193,9 @@ cargo test               # 核心层 + 外壳
 | **用 CSS `text-overflow: ellipsis` 截路径** | 它砍结尾，而下载文件名恰恰是**结尾**最能说明问题（扩展名、`[视频id]`）——`…(4K) 🖤 검스 VS 살스` 既看不出格式也看不出是哪一集 | 用 `ellipsizePath()` 做中间截断，头尾都保留 |
 | **用「两路编码都缺」判 storyboard** | generic 提取器给直链文件时也是 `vcodec: "none", acodec: null`，那样会把**能下的文件**滤掉 | 判据用 `ext == "mhtml"`（或 `format_note` 含 storyboard） |
 | **前后端各写一份格式分类** | Rust 说「两路都缺 = 仅视频」、TS 说「= 仅音频」，同一行两处结论不同 | 分类只在 `ytdlp_core::probe::format_kind` 定义，TS 侧注明必须逐字对齐；`probe_formats` 直接返回解析后的结构，不再让前端做 snake→camel 字段映射 |
+| **`gh api` / `gh run` 在本机走代理时全报 `EOF`** | GET、POST 都失败，但同样的请求用 `Invoke-RestMethod` 全通 | 建仓库、查运行状态改用 `Invoke-RestMethod` + `gh auth token`；`git push` 不受影响 |
+| **`gh repo create` 删不掉仓库** | 默认 scope 只有 `repo`/`workflow`/`gist`/`read:org`，删除返回 403 | 误建的仓库要么网页手动删，要么 `gh auth refresh -s delete_repo` |
+| **`Out-File -Encoding utf8` 会写 BOM** | 拿去当 JSON 请求体，GitHub 回 `Problems parsing JSON` | 用 `gh api -f key=value` 构造，或 `[Text.Encoding]::UTF8.GetBytes()` 传字节 |
 
 ## 测试资源
 
