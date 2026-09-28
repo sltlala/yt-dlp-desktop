@@ -197,8 +197,6 @@ export interface Settings {
   proxyProtocol: 'http' | 'socks5'
   proxyHost: string
   proxyPort: number
-  /** 绕过列表：`;` `,` 换行分隔，支持 `*` 通配与 `<local>`。 */
-  proxyBypass: string
   proxyAuth: boolean
   proxyUser: string
   proxyPassword: string

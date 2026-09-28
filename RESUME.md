@@ -196,6 +196,7 @@ cargo test               # 核心层 + 外壳
 | **`gh api` / `gh run` 在本机走代理时全报 `EOF`** | GET、POST 都失败，但同样的请求用 `Invoke-RestMethod` 全通 | 建仓库、查运行状态改用 `Invoke-RestMethod` + `gh auth token`；`git push` 不受影响 |
 | **`gh repo create` 删不掉仓库** | 默认 scope 只有 `repo`/`workflow`/`gist`/`read:org`，删除返回 403 | 误建的仓库要么网页手动删，要么 `gh auth refresh -s delete_repo` |
 | **`Out-File -Encoding utf8` 会写 BOM** | 拿去当 JSON 请求体，GitHub 回 `Problems parsing JSON` | 用 `gh api -f key=value` 构造，或 `[Text.Encoding]::UTF8.GetBytes()` 传字节 |
+| **归档文件带 BOM 时首行静默失效** | yt-dlp 用 `encoding='utf-8'` 读归档，**不认 BOM**：首行比对不上 → 该视频重新下载；**后面几行正常**，所以看着像归档在工作。实测 `generic clip` 命中跳过，`\ufeffgeneric clip` 输出 `clip`（没命中） | `remove_from_archive` 读时 `strip_prefix('\u{feff}')`、写回不写 BOM（DESIGN §12.1）；`strip_archive_ids` 有单测钉住 |
 
 ## 测试资源
 

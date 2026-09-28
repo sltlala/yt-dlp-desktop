@@ -471,15 +471,21 @@ pub fn proxy_config_of(settings: &Value) -> Option<ytdlp_core::ProxyConfig> {
                 port: if port == 0 { protocol.default_port() } else { port },
                 user,
                 password,
-                bypass: ytdlp_core::parse_bypass(&s("proxyBypass")),
+                // 内建的本机 / 内网直连，**不读设置**（见 `LOCAL_BYPASS` 的说明）
+                bypass: ytdlp_core::parse_bypass(ytdlp_core::proxy::LOCAL_BYPASS),
             })
         }
         "system" => {
             let sp = crate::sysproxy::current();
             let url = sp.proxy_url()?;
             let mut cfg = ytdlp_core::parse_proxy_url(&url)?;
-            // 系统的绕过列表也一并尊重——用户既然选「跟随系统」，就该跟完整
-            cfg.bypass = ytdlp_core::parse_bypass(&sp.bypass);
+            // 系统的绕过列表也一并尊重——用户既然选「跟随系统」，就该跟完整。
+            // 它为空时回落到内建的本机/内网直连，免得把自己也代理出去。
+            cfg.bypass = if sp.bypass.trim().is_empty() {
+                ytdlp_core::parse_bypass(ytdlp_core::proxy::LOCAL_BYPASS)
+            } else {
+                ytdlp_core::parse_bypass(&sp.bypass)
+            };
             Some(cfg)
         }
         _ => None,
@@ -861,14 +867,23 @@ mod tests {
 
     /// **这是绕过列表的关键**：命中就返回 None（直连），而不是把 proxy 传下去。
     /// 实测 yt-dlp 在给了 --proxy 时不会理 no_proxy。
+    ///
+    /// 名单是内建常量 `proxy::LOCAL_BYPASS`。这里**故意塞一个 `proxyBypass` 键**
+    /// 来固定「老配置残留的键不再有任何作用」——它既不能扩大也不能收窄名单。
     #[test]
     fn bypass_makes_request_go_direct() {
         let s = json!({
             "proxyMode": "manual", "proxyHost": "127.0.0.1", "proxyPort": 7897,
-            "proxyBypass": "localhost,127.*,192.168.*",
+            "proxyBypass": "example.com",
         });
         assert_eq!(proxy_for(&s, "http://127.0.0.1:8797/clip.mp4"), None);
         assert_eq!(proxy_for(&s, "http://192.168.1.9/x"), None);
+        assert_eq!(proxy_for(&s, "http://localhost:8797/clip.mp4"), None);
+        // `example.com` 曾被写进那个废弃键里，现在不生效：照常走代理。
+        assert_eq!(
+            proxy_for(&s, "https://example.com/x").as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
         // 外部站点照常走代理。
         assert_eq!(
             proxy_for(&s, "https://www.youtube.com/watch?v=x").as_deref(),
@@ -878,9 +893,8 @@ mod tests {
 
     #[test]
     fn url_without_host_is_not_bypassed() {
-        let s = json!({ "proxyMode": "manual", "proxyHost": "h", "proxyPort": 1,
-                        "proxyBypass": "*" });
-        // host 解析不出来时不该被 "*" 命中而变成直连。
+        let s = json!({ "proxyMode": "manual", "proxyHost": "h", "proxyPort": 1 });
+        // host 解析不出来时不该被内建名单命中而变成直连。
         assert_eq!(proxy_of(&s).as_deref(), Some("http://h:1"));
     }
 

@@ -232,7 +232,6 @@ export const defaultSettings: Settings = {
   proxyProtocol: 'http',
   proxyHost: '127.0.0.1',
   proxyPort: 7897,
-  proxyBypass: 'localhost,127.*,10.*,192.168.*,<local>',
   proxyAuth: false,
   proxyUser: '',
   proxyPassword: '',

@@ -70,8 +70,6 @@ const tauriBackend = {
       resolved: string | null
       usesPac: boolean
     }>('system_proxy'),
-  /** 把系统那套绕过列表（ProxyOverride）拿过来用。 */
-  systemProxyBypass: () => invoke<string>('system_proxy_bypass'),
   /** 原生「选择文件夹」对话框。返回 null 表示用户取消。 */
   pickFolder: (initial?: string) => invoke<string | null>('pick_folder', { initial: initial ?? null }),
   /** 原生「选择文件」对话框。返回 null 表示用户取消。 */
@@ -329,10 +327,6 @@ class MockBackend {
       resolved: null,
       usesPac: false,
     }
-  }
-
-  async systemProxyBypass(): Promise<string> {
-    return ''
   }
 
   async pause(id: string): Promise<void> {
@@ -607,7 +601,6 @@ export const api = isTauri()
       pickFolder: (initial?: string) => mock().pickFolder(initial),
       pickFile: (initial?: string) => mock().pickFile(initial),
       systemProxy: () => mock().systemProxy(),
-      systemProxyBypass: () => mock().systemProxyBypass(),
       probeFormats: (url: string) => mock().probeFormats(url),
       getSettings: () => mock().getSettings(),
       saveSettings: (s: Settings) => mock().saveSettings(s),

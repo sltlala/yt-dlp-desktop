@@ -21,10 +21,6 @@ use state::{AppState, Task};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// 与 `src/mock.ts` 的 `defaultSettings` 保持同构。
-/// 默认绕过的地址：本机与内网。代理软件通常自己也会绕，但**宿主这一层必须也绕**——
-/// 实测把 `127.0.0.1` 的本地测试服务器丢给代理会直接连不上。
-const DEFAULT_PROXY_BYPASS: &str = "localhost,127.*,10.*,192.168.*,<local>";
-
 fn default_settings() -> Value {
     json!({
         // 必须是真实可用的目录：空串会让设置页与侧栏都显示空白
@@ -51,8 +47,6 @@ fn default_settings() -> Value {
         "proxyProtocol": "http",
         "proxyHost": "",
         "proxyPort": 8080,
-        // 本机与内网永远不该走代理——实测本地回环服务器走了代理就直接失败
-        "proxyBypass": DEFAULT_PROXY_BYPASS,
         "proxyAuth": false,
         "proxyUser": "",
         "proxyPassword": "",
@@ -168,6 +162,12 @@ fn normalize_settings(s: Value) -> Value {
     // 升级时会把用户已经配好的代理静默丢掉。
     let s = migrate_proxy(s);
     let mut s = merge_defaults(default_settings(), s);
+    // `proxyBypass` 已废弃：直连名单现在是 `proxy::LOCAL_BYPASS` 常量，用户不可配。
+    // `merge_defaults` 只补键不删键，所以老配置里的这个键会一直留在 config.json 里，
+    // 看起来像个能用的开关。这里显式丢掉，避免误导。
+    if let Some(obj) = s.as_object_mut() {
+        obj.remove("proxyBypass");
+    }
     let blank = s
         .get("outputDir")
         .and_then(|v| v.as_str())
@@ -307,12 +307,6 @@ fn system_proxy() -> Value {
         // yt-dlp **不支持 PAC**，检测到就得如实告诉用户，别让他以为配了就能用
         "usesPac": !p.auto_config_url.trim().is_empty(),
     })
-}
-
-/// 把系统那套绕过列表（`ProxyOverride`）拿过来用。
-#[tauri::command]
-fn system_proxy_bypass() -> String {
-    sysproxy::current().bypass
 }
 
 #[tauri::command]
@@ -502,6 +496,31 @@ fn remove_many(app: AppHandle, ids: Vec<String>) {
     let _ = app.emit("task://update", app.state::<AppState>().snapshot());
 }
 
+/// 从归档文本里删掉含 `ids` 的行，返回（新文本, 删除条数）。
+///
+/// 抽成纯函数是因为 BOM 这个坑只有单测拦得住：`read_to_string` 不去 BOM，
+/// 而 yt-dlp 读归档用的是 `encoding='utf-8'`（**同样不认 BOM**），于是归档
+/// 首行会静默失效——实测该视频会被重新下载。写回时一律不写 BOM。
+fn strip_archive_ids(content: &str, ids: &[String]) -> (String, usize) {
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let mut removed = 0usize;
+    let kept: Vec<&str> = content
+        .lines()
+        .filter(|line| {
+            let hit = ids.iter().any(|id| line.contains(id.as_str()));
+            if hit {
+                removed += 1;
+            }
+            !hit
+        })
+        .collect();
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    (out, removed)
+}
+
 /// 从 download-archive 移除条目，使视频可重新下载。
 ///
 /// ⚠️ 仅此一步**不足以**重新下载：成品文件仍在磁盘时 yt-dlp 会跳过并返回 exit=0
@@ -521,7 +540,8 @@ fn remove_from_archive(state: State<AppState>, ids: Vec<String>) -> Result<usize
     }
 
     // 归档写入在 yt-dlp 侧有 LockFileEx 独占锁；宿主改写必须容忍占用并重试。
-    let mut removed = 0usize;
+    // ⚠️ `removed` 必须在循环**内**统计：写失败重试时如果累加，会把同一条
+    // 重复计数，界面上报出「移除了 2 条」而实际只删了 1 条。
     for _attempt in 0..5 {
         let content = match std::fs::read_to_string(&archive) {
             Ok(c) => c,
@@ -530,20 +550,7 @@ fn remove_from_archive(state: State<AppState>, ids: Vec<String>) -> Result<usize
                 continue;
             }
         };
-        let kept: Vec<&str> = content
-            .lines()
-            .filter(|line| {
-                let hit = ids.iter().any(|id| line.contains(id.as_str()));
-                if hit {
-                    removed += 1;
-                }
-                !hit
-            })
-            .collect();
-        let mut out = kept.join("\n");
-        if !out.is_empty() {
-            out.push('\n');
-        }
+        let (out, removed) = strip_archive_ids(&content, &ids);
         match std::fs::write(&archive, out) {
             Ok(_) => return Ok(removed),
             Err(_) => std::thread::sleep(std::time::Duration::from_millis(120)),
@@ -915,7 +922,6 @@ pub fn run() {
             apply_ytdlp_update,
             test_proxy,
             system_proxy,
-            system_proxy_bypass,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1060,13 +1066,35 @@ mod tests {
         assert_eq!(s["proxyMode"], json!("none"));
     }
 
-    /// 老配置里没有 proxyBypass，补全后应当拿到「本机 + 内网」的默认值。
+    /// 绕过列表已改为**内建常量**，设置里不该再出现这个键——
+    /// 留着它意味着界面上又会冒出一个没人改的输入框。
     #[test]
-    fn missing_bypass_gets_local_defaults() {
+    fn proxy_bypass_is_no_longer_a_setting() {
         let s = normalize_settings(json!({}));
-        let b = s["proxyBypass"].as_str().unwrap();
-        assert!(b.contains("127.*"), "实际: {b}");
-        assert!(b.contains("localhost"));
-        assert!(b.contains("<local>"));
+        assert!(s.get("proxyBypass").is_none(), "实际: {s}");
+
+        // 老配置里残留的键要被清掉，否则 config.json 里一直挂着一个
+        // 看起来能用的开关（`merge_defaults` 只补键不删键）。
+        let s = normalize_settings(json!({ "proxyBypass": "example.com", "proxyMode": "manual" }));
+        assert!(s.get("proxyBypass").is_none(), "实际: {s}");
+    }
+
+    /// 归档首行的 BOM 会静默废掉那一条记录（见 `strip_archive_ids` 的注释）。
+    #[test]
+    fn archive_removal_strips_bom_and_never_writes_one() {
+        let ids = vec!["bilibili BV1dK93BxESx".to_string()];
+        let (out, removed) =
+            strip_archive_ids("\u{feff}bilibili BV1dK93BxESx\nyoutube tW34TyACBIQ\n", &ids);
+        assert_eq!(removed, 1);
+        assert_eq!(out, "youtube tW34TyACBIQ\n");
+        assert!(!out.starts_with('\u{feff}'));
+
+        // 没有 BOM 时行为不变
+        let (out, removed) = strip_archive_ids("bilibili BV1dK93BxESx\n", &ids);
+        assert_eq!((out.as_str(), removed), ("", 1));
+
+        // 删空之后不该留一个空行
+        let (out, removed) = strip_archive_ids("youtube tW34TyACBIQ\n", &ids);
+        assert_eq!((out.as_str(), removed), ("youtube tW34TyACBIQ\n", 0));
     }
 }

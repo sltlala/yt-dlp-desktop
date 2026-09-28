@@ -115,7 +115,9 @@ yt-dlp 有两种发行形态，**只有一种能直接放进 `externalBin`**：
 | **`--downloader` 传存在的绝对路径会被静默忽略** | 不报错，直接回落到内置下载器——以为在用 aria2c，其实没有 | 只传裸名 `aria2c`，把自带目录**前置到子进程 PATH**（DESIGN §11.6） |
 | **aria2c 不在 PATH 时 yt-dlp 也是静默回落** | 同上，完全没有提示 | 宿主自己先验证 aria2c，找不到就关掉该选项并在任务里告警 |
 | **aria2c 是 GPLv2，yt-dlp 是 Unlicense** | 两者许可证不同，随包分发必须一并给许可证原文与源码出处 | 许可证文本进 `bundle.resources`，见 `binaries/README-third-party.md` |
+| **归档文件有 BOM 时首行静默失效** | yt-dlp 用 `encoding='utf-8'` 读归档，**不认 BOM**；首行比对失败 → 该视频被重新下载。后面几行正常，所以很难发现 | 宿主读写归档都去 BOM、写回不写 BOM（DESIGN §12.1）；手工修归档别用 `Out-File -Encoding utf8` |
 | **Windows PowerShell 5.1 的 `Get-Content -Raw` 按 ANSI 读 UTF-8** | 读改写一次就把整个文件的中文变成乱码，且**不可逆** | 改文件一律用编辑工具；确要用脚本时显式 `[System.IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` |
+| **`Out-File -Encoding utf8` 在 5.1 里写 BOM** | 不只是编码问题：把 JSON 发给 GitHub API 会 `Problems parsing JSON`，给 yt-dlp 的归档会废掉首行 | 生成给机器读的文件用 `[System.IO.File]::WriteAllText($p, $s, [Text.UTF8Encoding]::new($false))` |
 
 ### 关于 capabilities（踩过的坑）
 

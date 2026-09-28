@@ -80,6 +80,20 @@ pub fn parse_bypass(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// **内建**的绕过列表：本机与内网永远直连。
+///
+/// 这不是可配置项，刻意如此：
+///
+/// - 把 `127.0.0.1` 丢给代理**必然失败**（实测本地 HTTP 服务直接连不上），
+///   而配代理本来就是为了访问外网，本机流量走代理没有任何意义；
+/// - 之前把它做成一个可编辑文本框 + 一个「从系统导入」按钮，
+///   结果是绝大多数人不会碰的输入框占着版面，还要顺带解释 `*` 通配与
+///   `<local>` 两套语法。
+///
+/// 语义与 Windows 的 `ProxyOverride` 一致，所以「跟随系统代理」时
+/// 可以直接把系统那份也交给同一个匹配器。
+pub const LOCAL_BYPASS: &str = "localhost,127.*,10.*,192.168.*,<local>";
+
 /// userinfo 段要按 RFC 3986 转义，否则密码里的 `@`、`:`、`/` 会把 URL 拆坏。
 fn encode_userinfo(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

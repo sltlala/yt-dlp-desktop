@@ -261,16 +261,6 @@ function setProtocol(p: 'http' | 'socks5') {
   if (wasDefault) s.proxyPort = p === 'socks5' ? 1080 : 8080
 }
 
-async function importSystemBypass() {
-  try {
-    const b = await api.systemProxyBypass()
-    if (b.trim()) s.proxyBypass = b
-    else importError.value = '系统没有配置「不为以下项使用代理」。'
-  } catch (e) {
-    importError.value = `导入失败：${String(e)}`
-  }
-}
-
 /**
  * 「实际传给 yt-dlp」的预览。
  *
@@ -1042,19 +1032,6 @@ const templateWarning = computed(() => {
                   <span>端口</span>
                   <input v-model.number="s.proxyPort" type="number" min="1" max="65535" />
                 </label>
-              </div>
-
-              <label class="field">
-                <span>
-                  不使用代理的地址<em>用 ; , 或换行分隔；支持 * 通配与 &lt;local&gt;</em>
-                </span>
-                <textarea v-model="s.proxyBypass" class="mono" rows="2" spellcheck="false"></textarea>
-              </label>
-              <div class="row-inline">
-                <button class="btn sm" type="button" @click="importSystemBypass">
-                  从系统导入
-                </button>
-                <span class="ver">本机与内网默认直连——把它们丢给代理通常会直接失败</span>
               </div>
 
               <label class="check">

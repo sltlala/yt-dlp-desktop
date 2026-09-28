@@ -432,7 +432,7 @@ Chrome 以独占方式持有 cookie 库，`shutil.copy` 直接失败 → **浏�
 |---|---|
 | **不使用代理** | 不传 `--proxy` |
 | **跟随系统代理** | 每次派发时读注册表 `HKCU\...\Internet Settings`（`ProxyEnable` / `ProxyServer` / `ProxyOverride`），拼成 `--proxy` |
-| **手动配置** | HTTP / SOCKS5 + 主机名 + 端口 + 绕过列表 + 身份验证 |
+| **手动配置** | HTTP / SOCKS5 + 主机名 + 端口 + 身份验证（**没有**绕过列表输入框，见 §7.1） |
 
 设置页只用**读**注册表来展示；真正的取值在每次探测/下载时重做，所以改了系统代理
 不用回来点一下。走 `reg query` 而不是注册表 FFI：`HKCU` 不需要管理员权限，
@@ -447,12 +447,22 @@ Chrome 以独占方式持有 cookie 库，`shutil.copy` 直接失败 → **浏�
 （`runner::proxy_for(settings, url)`，按 URL 的主机名判断）。
 好处是结果完全可预测，不依赖 yt-dlp 的代理栈行为。
 
-匹配语义与 Windows 的 `ProxyOverride` 一致（`*` 通配、`<local>` 表示不带点的主机名），
-这样系统那份列表可以**直接粘贴/导入**过来。注意 `*.example.com` 按 Windows 语义
-**不匹配** `example.com` 本身。
+**这份名单是内建常量 `proxy::LOCAL_BYPASS`，界面上不提供输入框。**
+原先给过一个可编辑的 textarea，问题有二：一是绝大多数人只会把默认值删掉或
+改坏，然后本地/内网请求全走代理直接失败；二是它是纯字符串，用户很难知道自己
+改的东西有没有生效。本机与内网永远不该走代理，这是**不需要用户决策**的事。
 
-默认绕过 `localhost,127.*,10.*,192.168.*,<local>`：本机与内网永远不该走代理，
-实测把本地回环服务器丢给代理会直接失败。
+```
+localhost,127.*,10.*,192.168.*,<local>
+```
+
+匹配语义与 Windows 的 `ProxyOverride` 一致（`*` 通配、`<local>` 表示不带点的主机名）。
+注意 `*.example.com` 按 Windows 语义**不匹配** `example.com` 本身。
+「跟随系统代理」模式下若注册表里的 `ProxyOverride` 为空，同样回落到这份常量。
+
+> 配套的 `settings::proxyBypass` 键已废弃。`merge_defaults` 只补键不删键，
+> 所以 `normalize_settings` 里显式 `remove` 掉，免得 config.json 里一直挂着
+> 一个看起来还能用的开关。
 
 ### 7.2 SOCKS5 用 `socks5h`（DNS 也走代理）
 
@@ -916,7 +926,28 @@ Windows 下底层是 **`LockFileEx` 独占锁**（`utils/_utils.py` 第 1578 行
 
 **其他**：`--force-download-archive` 可强制写归档；`--no-download-archive` 是默认。
 
-### 12.1 与「手动删除」的交互 ⚠️
+### 12.1 ⚠️ BOM 会让归档**首行**静默失效
+
+yt-dlp 用 `open(archive, encoding='utf-8')` 读归档——**`utf-8` 不去 BOM**，
+所以带 BOM 的文件里首行会变成 `\ufeff<extractor> <id>`，与 `id` 比对失败。
+
+实测（本地 Range 服务器 + 一个只含一行的归档，`--simulate --print "%(id)s"`）：
+
+| 归档首行 | 输出 | 含义 |
+|---|---|---|
+| `generic clip\n` | *（无输出）* | 命中归档 → 跳过 ✅ |
+| `\ufeffgeneric clip\n` | `clip` | **没命中 → 会重新下载** ❌ |
+
+只有**第一行**受影响，后面的行照常匹配——所以症状很隐蔽：归档看起来在工作，
+实际上最早那条记录一直是废的。（本项目里就踩到了：用户的 `archive.txt` 带 BOM，
+首行那条 bilibili 记录实际无效，而第二行的 youtube 记录正常跳过。）
+
+**约定**：
+- 任何**读**归档的宿主代码都要 `strip_prefix('\u{feff}')`；
+- 任何**写**归档的宿主代码都不要写 BOM（`std::fs::write` 天然不写，
+  但 PowerShell `Out-File -Encoding utf8` 会写——手工修归档时别用它）。
+
+### 12.2 与「手动删除」的交互 ⚠️
 
 宿主删除归档条目时，运行中的 yt-dlp 进程**持有独占锁**（尽管只在 append 的瞬间）。
 Windows 上 `LockFileEx` 会阻塞其他句柄 → 宿主的写入可能遭遇 sharing violation。
