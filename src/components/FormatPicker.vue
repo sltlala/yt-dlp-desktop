@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../ipc'
-import type { FormatOption } from '../types'
+import type { FormatOption, FormatPreset } from '../types'
 import { fmtBytes } from '../utils'
 
 const props = defineProps<{
@@ -20,6 +20,22 @@ const picked = ref<string | null>(null)
 const loading = ref(false)
 
 onMounted(async () => {
+  // 预设的表达式**由后端按当前编码偏好算好**（DESIGN §3.3）。
+  // 原先这张表硬编码在这里，于是设置里选了「优先 H.264」之后，
+  // 从选择器里点「1080p」又会把偏好丢掉——`-f` 被抄成了两份。
+  try {
+    presets.value = await api.formatPresets()
+  } catch {
+    // 取不到就退回不带偏好的默认——**不能让「预设」页签变成一片空白**，
+    // 那看起来像功能坏了。（这些值与 `preset_expression` 的无偏好输出一致。）
+    presets.value = [
+      { label: '最佳画质', expr: 'bv*+ba/b', note: '自动挑最优视频轨与音频轨' },
+      { label: '1080p', expr: 'bv*[height<=1080]+ba/b[height<=1080]/b', note: '不超过 1920×1080' },
+      { label: '720p', expr: 'bv*[height<=720]+ba/b[height<=720]/b', note: '省流量' },
+      { label: '仅音频 MP3', expr: 'ba/b', note: '提取音频并转码' },
+    ]
+  }
+
   if (props.formats?.length) {
     formats.value = props.formats
     return
@@ -32,12 +48,7 @@ onMounted(async () => {
   }
 })
 
-const presets = [
-  { label: '最佳画质', expr: 'bv*+ba/b', note: '自动挑最优视频轨与音频轨' },
-  { label: '1080p', expr: 'bv*[height<=1080]+ba/b[height<=1080]/b', note: '不超过 1920×1080' },
-  { label: '720p', expr: 'bv*[height<=720]+ba/b[height<=720]/b', note: '省流量' },
-  { label: '仅音频 MP3', expr: 'ba/b', note: '提取音频并转码' },
-]
+const presets = ref<FormatPreset[]>([])
 
 /* ───────────────── 音视频分开时怎么选 ─────────────────
  *

@@ -197,6 +197,9 @@ cargo test               # 核心层 + 外壳
 | **`gh repo create` 删不掉仓库** | 默认 scope 只有 `repo`/`workflow`/`gist`/`read:org`，删除返回 403 | 误建的仓库要么网页手动删，要么 `gh auth refresh -s delete_repo` |
 | **`Out-File -Encoding utf8` 会写 BOM** | 拿去当 JSON 请求体，GitHub 回 `Problems parsing JSON` | 用 `gh api -f key=value` 构造，或 `[Text.Encoding]::UTF8.GetBytes()` 传字节 |
 | **归档文件带 BOM 时首行静默失效** | yt-dlp 用 `encoding='utf-8'` 读归档，**不认 BOM**：首行比对不上 → 该视频重新下载；**后面几行正常**，所以看着像归档在工作。实测 `generic clip` 命中跳过，`\ufeffgeneric clip` 输出 `clip`（没命中） | `remove_from_archive` 读时 `strip_prefix('\u{feff}')`、写回不写 BOM（DESIGN §12.1）；`strip_archive_ids` 有单测钉住 |
+| **`-S` 做编码偏好会连分辨率一起丢掉** | `-S` **整体替换**默认排序，不是追加；`-S acodec:aac` + `-f bv*+ba/b` 实测选中 360p 的 `18`（本该 1080p）——用户只想换音频编码，画质静默塌掉 | 改用 `-f` 过滤器链（DESIGN §3.3），`preset_expression_with` 有单测，生成结果逐条对 yt-dlp 实测过 |
+| **`h264` / `aac` 匹配不上 yt-dlp 的任何格式** | 实测 `[vcodec^=h264]`、`[acodec^=aac]` 都静默落空，得写 `avc1` / `mp4a`（实际报 `avc1.640028` / `mp4a.40.2`）；不报错，只是没有偏好 | 选择项由 `codec_choices` 从 Rust 白名单生成，前端不另写一份 |
+| **非法 `-f` 过滤器让 yt-dlp 直接崩** | `[vcodec@=x]`、`[vcodec^=]`、`~=` 都抛 `SyntaxError: Invalid filter specification` + Python traceback | `CodecPreference::sanitized` 白名单把关，界面值不进 `-f` |
 
 ## 测试资源
 

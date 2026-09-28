@@ -98,11 +98,147 @@ pub enum Preset {
 /// **绝不存 `format_id`**（DESIGN §3）：表达式可离线复现、任务可重放，
 /// 且不需要持久化 info.json。
 pub fn preset_expression(preset: &Preset) -> String {
-    match preset {
-        Preset::Best => "bv*+ba/b".to_string(),
-        Preset::MaxHeight(h) => format!("bv*[height<={h}]+ba/b[height<={h}]/b"),
-        Preset::AudioOnly(_) => "ba/b".to_string(),
+    preset_expression_with(preset, &CodecPreference::default())
+}
+
+// ─────────────────────────── 编码偏好 ───────────────────────────
+
+/// 「优先选择」哪种音视频编码。
+///
+/// ## 为什么用 `-f` 过滤器而不是 `-S` / `--format-sort`
+///
+/// 直觉上编码偏好该用 `-S vcodec:h264,acodec:aac`，**实测这是个陷阱**：
+/// `-S` 会**整体替换** yt-dlp 的默认排序，而不是追加。默认排序里 `res` 权重很高，
+/// 一旦被替换掉，分辨率就不再参与比较——于是「首选 AAC 音频」会把
+/// **360p 的封装格式**排到 1080p 之上（实测 `-S acodec:aac` + `-f bv*+ba/b`
+/// 选中的是 `18`，480p 都不到）。用户以为自己只是换了个编码，实际画质塌了。
+///
+/// 改用 `-f` 过滤器（`bv*[vcodec^=avc1]+ba[acodec^=mp4a]`）：
+/// 默认排序原封不动（`res` 仍然主导），偏好只是**加在候选集上**，
+/// 站点没有首选编码时按 `/` 逐级回落，实测不会失败也不会降画质。
+///
+/// ## 值必须与 yt-dlp 报出的编码名一致
+///
+/// 实测：`h264` 与 `aac` 这两个「大家熟悉的叫法」**匹配不上任何东西**——
+/// yt-dlp 报的是 `avc1.640028` / `mp4a.40.2`，前缀得写 `avc1` / `mp4a`。
+/// 写错了不会报错，只会静默退化成「没有偏好」。
+///
+/// ## 非法过滤器会让 yt-dlp 直接崩
+///
+/// 实测任何不合法的过滤器（`[vcodec@=x]`、`[vcodec^=]`）都会让 yt-dlp
+/// 抛 `SyntaxError: Invalid filter specification` 并打印 Python traceback、
+/// 非零退出。所以值**必须**过白名单，绝不能让用户输入原样进 `-f`。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CodecPreference {
+    /// 视频编码前缀，如 `avc1`。空 = 不指定。
+    pub video: String,
+    /// 音频编码前缀，如 `mp4a`。空 = 不指定。
+    pub audio: String,
+}
+
+/// 可选的视频编码。**这是唯一真源**：前端的选择项由它生成，
+/// 后端也只接受这里出现的值（见 [`CodecPreference::sanitized`]）。
+pub const VIDEO_CODEC_CHOICES: &[(&str, &str)] = &[
+    ("", "不指定"),
+    ("avc1", "H.264 / AVC"),
+    ("vp9", "VP9"),
+    ("av01", "AV1"),
+];
+
+/// 可选的音频编码。
+pub const AUDIO_CODEC_CHOICES: &[(&str, &str)] = &[
+    ("", "不指定"),
+    ("mp4a", "AAC / m4a"),
+    ("opus", "Opus"),
+    ("vorbis", "Vorbis"),
+];
+
+impl CodecPreference {
+    /// 只接受白名单里的值，其余一律当「不指定」。
+    ///
+    /// 这是**安全边界**而不是顺手校验：非法值进 `-f` 会让 yt-dlp 崩（见上）。
+    pub fn sanitized(video: &str, audio: &str) -> Self {
+        Self {
+            video: pick(VIDEO_CODEC_CHOICES, video),
+            audio: pick(AUDIO_CODEC_CHOICES, audio),
+        }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.video.is_empty() && self.audio.is_empty()
+    }
+}
+
+/// 大小写不敏感地按白名单取值；不在表里就返回空串。
+fn pick(choices: &[(&str, &str)], raw: &str) -> String {
+    let want = raw.trim().to_ascii_lowercase();
+    choices
+        .iter()
+        .map(|(v, _)| *v)
+        .find(|v| !v.is_empty() && *v == want)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 生成一个过滤器片段，如 `[vcodec^=avc1]`；没有偏好时返回空串。
+fn codec_filter(field: &str, value: &str) -> String {
+    if value.is_empty() {
+        String::new()
+    } else {
+        format!("[{field}^={value}]")
+    }
+}
+
+/// 把编码偏好织进预设表达式（DESIGN §3.3）。
+///
+/// 回落顺序是「偏好满足得越多越靠前」：
+/// 1. 视频+音频都命中
+/// 2. 只命中视频
+/// 3. 只命中音频
+/// 4. 都不命中（等于原预设）
+/// 5. 没有独立音视频轨的站点 → 合并格式
+///
+/// 每一级都是**偏好**而不是过滤：站点没有首选编码时会逐级回落，
+/// 不会出现「请求的格式不可用」。
+pub fn preset_expression_with(preset: &Preset, codec: &CodecPreference) -> String {
+    let v = codec_filter("vcodec", &codec.video);
+    let a = codec_filter("acodec", &codec.audio);
+
+    // 仅音频：视频偏好毫无意义，直接忽略
+    if matches!(preset, Preset::AudioOnly(_)) {
+        return if a.is_empty() {
+            "ba/b".to_string()
+        } else {
+            format!("ba{a}/ba/b")
+        };
+    }
+
+    // 高度上限要同时加在 `bv*` 与最后的合并格式回落上
+    let h = match preset {
+        Preset::MaxHeight(h) => format!("[height<={h}]"),
+        _ => String::new(),
+    };
+
+    let mut tiers: Vec<String> = Vec::new();
+    if !v.is_empty() && !a.is_empty() {
+        tiers.push(format!("bv*{h}{v}+ba{a}"));
+    }
+    if !v.is_empty() {
+        tiers.push(format!("bv*{h}{v}+ba"));
+    }
+    if !a.is_empty() {
+        tiers.push(format!("bv*{h}+ba{a}"));
+    }
+    tiers.push(format!("bv*{h}+ba"));
+    // 最后是「本站只有封装好的单文件」的情形。
+    // 有高度上限时先试受限的那条，再退回完全不限——原 `preset_expression` 就是这么写的。
+    tiers.push(if h.is_empty() {
+        "b".to_string()
+    } else {
+        format!("b{h}/b")
+    });
+
+    tiers.join("/")
 }
 
 /// 嵌入选项（DESIGN §14）。
@@ -245,6 +381,9 @@ pub struct DownloadSpec {
     /// JS 运行时。**YouTube 的 n-sig 挑战靠它**，不给就会出现
     /// 「需要重载页面」或只返回 storyboard。
     pub js: JsRuntimeOptions,
+    /// 「优先选择」的音视频编码。只作用于 `format_override` 为空时的预设表达式
+    /// （见 [`preset_expression_with`]）。
+    pub codec: CodecPreference,
 }
 
 /// 把勾选的下标（0-based）转成 `--playlist-items` 的值。
@@ -308,6 +447,7 @@ impl DownloadSpec {
             filename_template: "%(title).150B [%(id)s].%(ext)s".to_string(),
             playlist_items: None,
             js: JsRuntimeOptions::default(),
+            codec: CodecPreference::default(),
         }
     }
 
@@ -319,13 +459,16 @@ impl DownloadSpec {
     /// 真正传给 `-f` 的表达式：用户选的优先，否则用预设。
     ///
     /// 空白字符串视为「没选」——界面上清空输入框不该产出一个非法的 `-f`。
+    ///
+    /// 注意编码偏好**只在预设这一支生效**：`format_override` 是用户在格式表里
+    /// 明确点的一行（或手填的表达式），那是他自己的决定，不再替他改动。
     pub fn effective_format_expression(&self) -> String {
         self.format_override
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| preset_expression(&self.preset))
+            .unwrap_or_else(|| preset_expression_with(&self.preset, &self.codec))
     }
 }
 
@@ -642,6 +785,134 @@ mod tests {
             "ba/b"
         );
         // 表达式形态是硬契约：它被存进数据库用于重放（DESIGN §3）。
+    }
+
+    // ─────────── 编码偏好（DESIGN §3.3）───────────
+
+    /// 没有偏好时，新路径必须与老的 `preset_expression` **逐字一致**。
+    /// 表达式是存进数据库的硬契约，改形态等于让老任务重放失效。
+    #[test]
+    fn no_preference_matches_the_old_hardcoded_expressions() {
+        let none = CodecPreference::default();
+        for p in [
+            Preset::Best,
+            Preset::MaxHeight(1080),
+            Preset::MaxHeight(720),
+            Preset::AudioOnly(AudioFormat::Mp3),
+        ] {
+            assert_eq!(preset_expression_with(&p, &none), preset_expression(&p));
+        }
+    }
+
+    #[test]
+    fn codec_preference_builds_a_fallback_chain() {
+        let c = CodecPreference::sanitized("avc1", "mp4a");
+        assert_eq!(
+            preset_expression_with(&Preset::Best, &c),
+            "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*[vcodec^=avc1]+ba/bv*+ba[acodec^=mp4a]/bv*+ba/b"
+        );
+
+        // 只给视频偏好
+        let c = CodecPreference::sanitized("vp9", "");
+        assert_eq!(
+            preset_expression_with(&Preset::Best, &c),
+            "bv*[vcodec^=vp9]+ba/bv*+ba/b"
+        );
+
+        // 只给音频偏好
+        let c = CodecPreference::sanitized("", "opus");
+        assert_eq!(
+            preset_expression_with(&Preset::Best, &c),
+            "bv*+ba[acodec^=opus]/bv*+ba/b"
+        );
+    }
+
+    /// 高度上限必须同时挂在 `bv*` 与最后的合并格式回落上，
+    /// 否则「1080p + 首选 H.264」会退化成完全不限高度。
+    #[test]
+    fn codec_preference_keeps_the_height_cap() {
+        let c = CodecPreference::sanitized("avc1", "mp4a");
+        assert_eq!(
+            preset_expression_with(&Preset::MaxHeight(1080), &c),
+            "bv*[height<=1080][vcodec^=avc1]+ba[acodec^=mp4a]\
+             /bv*[height<=1080][vcodec^=avc1]+ba\
+             /bv*[height<=1080]+ba[acodec^=mp4a]\
+             /bv*[height<=1080]+ba\
+             /b[height<=1080]/b"
+        );
+    }
+
+    /// 仅音频时忽略视频偏好——`ba` 里根本没有视频轨。
+    #[test]
+    fn audio_only_ignores_video_preference() {
+        let c = CodecPreference::sanitized("avc1", "opus");
+        assert_eq!(
+            preset_expression_with(&Preset::AudioOnly(AudioFormat::Mp3), &c),
+            "ba[acodec^=opus]/ba/b"
+        );
+        let c = CodecPreference::sanitized("avc1", "");
+        assert_eq!(
+            preset_expression_with(&Preset::AudioOnly(AudioFormat::Mp3), &c),
+            "ba/b"
+        );
+    }
+
+    /// ⚠️ 这是安全边界：实测非法过滤器会让 yt-dlp 抛 SyntaxError 并打印
+    /// Python traceback（不是优雅报错）。任何不在白名单里的值都必须被丢掉。
+    #[test]
+    fn codec_tokens_are_whitelisted() {
+        // 用户熟悉的叫法**匹配不上** yt-dlp 报出的名字，必须被拒。
+        assert_eq!(CodecPreference::sanitized("h264", "aac").video, "");
+        assert_eq!(CodecPreference::sanitized("h264", "aac").audio, "");
+
+        // 能构造出非法过滤器的东西一律拒绝
+        for bad in [
+            "avc1]",
+            "avc1+ba",
+            "vcodec^=avc1",
+            "^=",
+            "",
+            " ",
+            "mp4a],ba[",
+        ] {
+            assert_eq!(CodecPreference::sanitized(bad, bad).video, "", "{bad}");
+            assert_eq!(CodecPreference::sanitized(bad, bad).audio, "", "{bad}");
+        }
+
+        // 白名单里的值大小写不敏感
+        assert_eq!(CodecPreference::sanitized("AVC1", "OpUs").video, "avc1");
+        assert_eq!(CodecPreference::sanitized("AVC1", "OpUs").audio, "opus");
+        assert_eq!(CodecPreference::sanitized(" av01 ", " vorbis ").video, "av01");
+    }
+
+    /// 偏好只写进预设那一支；用户显式选的表达式原样使用。
+    #[test]
+    fn explicit_override_ignores_codec_preference() {
+        let mut s = spec();
+        s.codec = CodecPreference::sanitized("avc1", "mp4a");
+        s.format_override = Some("137+ba/137".into());
+        assert_eq!(s.effective_format_expression(), "137+ba/137");
+
+        s.format_override = None;
+        assert_eq!(
+            s.effective_format_expression(),
+            "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*[vcodec^=avc1]+ba/bv*+ba[acodec^=mp4a]/bv*+ba/b"
+        );
+    }
+
+    /// 生成出来的每个过滤器都必须是 yt-dlp 认得的形式，
+    /// 且**绝不能出现 `-S`**——实测 `-S` 会整体替换默认排序，
+    /// 把分辨率从比较里挤掉（首选 AAC 会选中 360p 的 `18`）。
+    #[test]
+    fn codec_preference_never_uses_format_sort() {
+        let mut s = spec();
+        s.codec = CodecPreference::sanitized("avc1", "mp4a");
+        let a = build_download_args(&s);
+        assert!(!a.iter().any(|x| x == "-S" || x == "--format-sort"));
+
+        let expr = s.effective_format_expression();
+        assert!(expr.contains("[vcodec^=avc1]"));
+        assert!(expr.contains("[acodec^=mp4a]"));
     }
 
     #[test]

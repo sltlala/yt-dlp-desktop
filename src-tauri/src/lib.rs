@@ -57,6 +57,11 @@ fn default_settings() -> Value {
         "archivePath": paths::archive_file().to_string_lossy(),
         "limitRate": "",
         "filenameTemplate": "%(title).150B [%(id)s].%(ext)s",
+        // 「优先选择」的编码，空 = 不指定。值必须是 yt-dlp 报出的编码名前缀
+        // （`avc1` / `vp9` / `av01` / `mp4a` / `opus` / `vorbis`），
+        // 白名单在 `runner::codec_of` 里把关（DESIGN §3.3）。
+        "preferVcodec": "",
+        "preferAcodec": "",
         // JS 运行时：留空表示自动检测。**不是可选优化**——
         // 不给的话 YouTube 会返回「需要重载页面」或只给 storyboard。
         // 注意这里**没有** `jsRemoteComponents`：界面上已经不提供那个开关，
@@ -340,7 +345,9 @@ fn add_url(app: AppHandle, url: String) -> Task {
         id.clone(),
         url,
         output_dir,
-        ytdlp_core::preset_expression(&spec.preset),
+        // 显示的就是**实际会用的**那个表达式（含编码偏好），不是裸预设——
+        // 否则任务详情里那行会与实际命令行对不上。
+        spec.effective_format_expression(),
     );
     task.container = ytdlp_core::resolve_container(spec.container, &spec.embed)
         .as_str()
@@ -454,7 +461,10 @@ fn set_task_format(app: AppHandle, id: String, expression: String) {
             .unwrap_or(Value::Null);
         (
             None,
-            ytdlp_core::preset_expression(&runner::preset_of(&settings)),
+            ytdlp_core::preset_expression_with(
+                &runner::preset_of(&settings),
+                &runner::codec_of(&settings),
+            ),
         )
     } else {
         (Some(expr.clone()), expr)
@@ -787,6 +797,65 @@ fn detect_js_runtimes() -> Value {
     })
 }
 
+/// 「优先选择」的编码候选，供设置页生成选择项。
+///
+/// **唯一真源是核心层的白名单**。让前端自己写一份选项列表，迟早会与后端
+/// 接受的值分叉，而分叉的后果是静默退化（白名单外的值会被当成「不指定」），
+/// 界面上完全看不出来。
+#[tauri::command]
+fn codec_choices() -> Value {
+    let conv = |list: &[(&str, &str)]| {
+        list.iter()
+            .map(|(value, label)| json!({ "value": value, "label": label }))
+            .collect::<Vec<_>>()
+    };
+    json!({
+        "video": conv(ytdlp_core::VIDEO_CODEC_CHOICES),
+        "audio": conv(ytdlp_core::AUDIO_CODEC_CHOICES),
+    })
+}
+
+/// 格式选择器里的预设列表。
+///
+/// 表达式由核心层按**当前编码偏好**生成，所以从选择器里点「1080p」不会把
+/// 设置里的编码偏好丢掉。这份列表原先硬编码在 `FormatPicker.vue` 里，
+/// 等于把 `-f` 表达式抄了两份——DESIGN §3 反复强调过不要这样。
+#[tauri::command]
+fn format_presets(state: State<AppState>) -> Value {
+    let settings = state.settings.lock().map(|s| s.clone()).unwrap_or(Value::Null);
+    let codec = runner::codec_of(&settings);
+    let item = |label: &str, note: &str, preset: ytdlp_core::Preset| {
+        json!({
+            "label": label,
+            "note": note,
+            "expr": ytdlp_core::preset_expression_with(&preset, &codec),
+        })
+    };
+    json!([
+        item("最佳画质", "自动挑最优视频轨与音频轨", ytdlp_core::Preset::Best),
+        item("1080p", "不超过 1920×1080", ytdlp_core::Preset::MaxHeight(1080)),
+        item("720p", "省流量", ytdlp_core::Preset::MaxHeight(720)),
+        item(
+            "仅音频 MP3",
+            "提取音频并转码",
+            ytdlp_core::Preset::AudioOnly(ytdlp_core::AudioFormat::Mp3),
+        ),
+    ])
+}
+
+/// 把「当前编辑中的设置」翻译成实际会传给 `-f` 的表达式。
+///
+/// 设置页要显示这一行，但又不能在前端重写一遍表达式拼装——`-f` 是**硬契约**
+/// （存进数据库用于重放）。这里直接复用 `preset_of` + `codec_of`，
+/// 也就是下载路径用的同一组读取器，所以预览不可能与实际命令分叉。
+#[tauri::command]
+fn preview_format_expression(settings: Value) -> String {
+    ytdlp_core::preset_expression_with(
+        &runner::preset_of(&settings),
+        &runner::codec_of(&settings),
+    )
+}
+
 /// aria2c 可执行文件信息，供设置页展示。
 ///
 /// 用户需要知道**当前用的是哪一份**：随包的出厂副本、还是 PATH 上那份旧的。
@@ -924,6 +993,9 @@ pub fn run() {
             test_cookie_browser,
             list_browsers,
             detect_js_runtimes,
+            codec_choices,
+            format_presets,
+            preview_format_expression,
             check_ytdlp_update,
             apply_ytdlp_update,
             test_proxy,

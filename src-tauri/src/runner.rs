@@ -19,7 +19,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use ytdlp_core::args::{
-    AudioFormat, Container, CookieSource, DownloadSpec, EmbedOptions, JsRuntimeOptions, Preset,
+    AudioFormat, CodecPreference, Container, CookieSource, DownloadSpec, EmbedOptions,
+    JsRuntimeOptions, Preset,
 };
 use ytdlp_core::{parse_line, Event, SkipReason};
 
@@ -107,6 +108,8 @@ pub fn spec_from_settings(settings: &Value, url: &str, task_id: &str) -> Downloa
     }
     // JS 运行时：不给的话 YouTube 拿不到真实格式（见 JsRuntimeOptions 的说明）
     spec.js = js;
+    // 编码偏好：只影响预设表达式（见 CodecPreference 的说明）
+    spec.codec = codec_of(settings);
     spec
 }
 
@@ -526,6 +529,22 @@ pub fn redact_proxy(url: &str) -> String {
         }
         None => url.to_string(),
     }
+}
+
+/// 从设置里取「优先选择」的编码。
+///
+/// ⚠️ 走 `CodecPreference::sanitized` 的白名单，**不能直接把设置里的字符串拼进
+/// `-f`**：实测任何非法过滤器都会让 yt-dlp 抛 `SyntaxError` 并打印 Python
+/// traceback（见 `CodecPreference` 的说明）。白名单外的值一律当「不指定」。
+pub fn codec_of(settings: &Value) -> CodecPreference {
+    let g = |k: &str| {
+        settings
+            .get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    CodecPreference::sanitized(&g("preferVcodec"), &g("preferAcodec"))
 }
 
 /// 从设置里取 JS 运行时配置。

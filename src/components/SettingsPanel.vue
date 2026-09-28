@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useTaskStore } from '../stores/tasks'
 import { api, type ProbeResult, type UpdateInfo } from '../ipc'
-import type { BrowserChoice, CookieProfile, JsRuntimeInfo, Settings } from '../types'
+import type { BrowserChoice, CodecChoices, CookieProfile, JsRuntimeInfo, Settings } from '../types'
 import { deepClone, ellipsizePath, fmtTime } from '../utils'
 
 const emit = defineEmits<{ close: [] }>()
@@ -109,8 +109,62 @@ onMounted(() => {
   void loadBrowsers()
   void loadJsRuntimes()
   void loadAria2c()
+  void loadCodecChoices()
   // 选「跟随系统代理」时要把系统那份读出来展示，进页面就先取一次
   if (s.proxyMode === 'system') void loadSystemProxy()
+})
+
+/* ── 优先选择编码（DESIGN §3.3）──
+ *
+ * 候选列表**由后端白名单生成**，前端不另写一份：值必须与 yt-dlp 报出的
+ * 编码名一致（`avc1` 而非 `h264`），而白名单外的值会被后端静默丢弃——
+ * 界面上完全看不出来。详见 `CodecPreference` 的说明。
+ */
+const codecChoices = ref<CodecChoices>({ video: [], audio: [] })
+
+async function loadCodecChoices() {
+  try {
+    codecChoices.value = await api.codecChoices()
+  } catch {
+    /* 取不到就只剩「不指定」一项，不影响已有设置 */
+  }
+}
+
+/**
+ * 实际会传给 `-f` 的表达式。**由后端算**，前端不自己拼——
+ * 表达式是存进数据库的硬契约（DESIGN §3），拼两份必然分叉。
+ */
+const codecPreview = ref('')
+
+watch(
+  () => [s.preset, s.maxHeight, s.audioFormat, s.preferVcodec, s.preferAcodec],
+  async () => {
+    try {
+      codecPreview.value = await api.previewFormatExpression(deepClone(s))
+    } catch {
+      codecPreview.value = ''
+    }
+  },
+  { immediate: true },
+)
+
+/**
+ * 容器与编码的组合提示。
+ *
+ * 不去阻止用户——偏好本来就是「能满足最好，不能满足就算了」，
+ * 而且 yt-dlp 合并时 ffmpeg 往往也能凑合。只把后果说清楚。
+ */
+const codecCompatHint = computed(() => {
+  const v = s.preferVcodec
+  const a = s.preferAcodec
+  const c = s.container
+  if (c === 'mp4' && (v === 'vp9' || v === 'av01' || a === 'opus' || a === 'vorbis')) {
+    return 'MP4 与 VP9 / AV1 / Opus 的兼容性较差，部分播放器放不出来；想要这些编码建议用 MKV 或自动。'
+  }
+  if (c === 'webm' && (v === 'avc1' || a === 'mp4a')) {
+    return 'WebM 装不下 H.264 / AAC，选它们的话建议改用 MP4 或自动，否则要靠 ffmpeg 重新封装。'
+  }
+  return ''
 })
 
 /** 展示用的 aria2c 落点信息（随包副本还是 PATH 上那份）。 */
@@ -785,6 +839,36 @@ const templateWarning = computed(() => {
             启用缩略图嵌入时 WebM 会<strong>直接失败</strong>；MP4 的缩略图依赖三级回落且字幕只能用
             mov_text。MKV 是唯一全部可用的容器，因此自动模式会切到 MKV。
           </p>
+
+          <h3>优先选择编码</h3>
+          <p class="note">
+            只是一种<strong>偏好</strong>：站点没有首选编码时会自动退到次选，
+            不会因此下不到。留空表示不干预 yt-dlp 的默认挑法。
+          </p>
+          <div class="codec-grid">
+            <label class="field inline">
+              <span>视频</span>
+              <select v-model="s.preferVcodec">
+                <option v-for="c in codecChoices.video" :key="c.value" :value="c.value">
+                  {{ c.label }}
+                </option>
+              </select>
+            </label>
+            <label class="field inline">
+              <span>音频</span>
+              <select v-model="s.preferAcodec">
+                <option v-for="c in codecChoices.audio" :key="c.value" :value="c.value">
+                  {{ c.label }}
+                </option>
+              </select>
+            </label>
+          </div>
+          <p class="note">
+            表达式：<code class="mono">{{ codecPreview }}</code>
+          </p>
+          <p v-if="codecCompatHint" class="note warn">
+            {{ codecCompatHint }}
+          </p>
         </section>
 
         <!-- ───── 嵌入 ───── -->
@@ -1381,6 +1465,12 @@ h3:first-child {
   display: grid;
   grid-template-columns: 1fr 120px;
   gap: 8px;
+}
+/* 「优先选择编码」的两个下拉：等宽并排 */
+.codec-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
 }
 .sub-line {
   margin: 0;

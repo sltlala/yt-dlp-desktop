@@ -9,7 +9,16 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { demoFormats, demoTasks, defaultSettings } from './mock'
-import type { BrowserChoice, CookieProfile, FormatOption, JsRuntimeInfo, Settings, Task } from './types'
+import type {
+  BrowserChoice,
+  CodecChoices,
+  CookieProfile,
+  FormatOption,
+  FormatPreset,
+  JsRuntimeInfo,
+  Settings,
+  Task,
+} from './types'
 
 /** 是否运行在 Tauri 容器里。 */
 export function isTauri(): boolean {
@@ -111,6 +120,24 @@ const tauriBackend = {
   listBrowsers: () => invoke<BrowserChoice[]>('list_browsers'),
   /** 检测本机可用的 JS 运行时——YouTube 的 n-sig 挑战靠它。 */
   detectJsRuntimes: () => invoke<JsRuntimeInfo>('detect_js_runtimes'),
+  /**
+   * 「优先选择」的编码候选。**不要在前端另写一份**——白名单在后端，
+   * 两边分叉的后果是静默退化（后端丢弃不认识的值，界面上看不出来）。
+   */
+  codecChoices: () => invoke<CodecChoices>('codec_choices'),
+  /**
+   * 格式选择器的预设列表。表达式由后端按**当前编码偏好**生成，
+   * 所以从选择器里点「1080p」不会把设置里的偏好丢掉。
+   */
+  formatPresets: () => invoke<FormatPreset[]>('format_presets'),
+  /**
+   * 把「编辑中的设置」翻译成实际会用的 `-f` 表达式。
+   *
+   * 前端**不要自己拼**：`-f` 是存进数据库的硬契约，拼两份必然分叉
+   * （曾经把预设表抄进 `FormatPicker.vue` 就是这个毛病）。
+   */
+  previewFormatExpression: (settings: Settings) =>
+    invoke<string>('preview_format_expression', { settings }),
 
   // ── 代理与更新（DESIGN §7、§8）──
   /** 真发一次请求验证代理——只校验格式的话，代理没启动也会显示「格式正确」。 */
@@ -528,6 +555,64 @@ class MockBackend {
     ]
   }
 
+  async codecChoices(): Promise<CodecChoices> {
+    // ⚠️ 镜像 `ytdlp_core::VIDEO_CODEC_CHOICES` / `AUDIO_CODEC_CHOICES`。
+    // 真源在 Rust——值必须与 yt-dlp 实际报出的编码名前缀一致（`avc1` 而不是
+    // `h264`），写错不会报错，只会静默退化成「没有偏好」。
+    return {
+      video: [
+        { value: '', label: '不指定' },
+        { value: 'avc1', label: 'H.264 / AVC' },
+        { value: 'vp9', label: 'VP9' },
+        { value: 'av01', label: 'AV1' },
+      ],
+      audio: [
+        { value: '', label: '不指定' },
+        { value: 'mp4a', label: 'AAC / m4a' },
+        { value: 'opus', label: 'Opus' },
+        { value: 'vorbis', label: 'Vorbis' },
+      ],
+    }
+  }
+
+  async formatPresets(): Promise<FormatPreset[]> {
+    const expr = (patch: Partial<Settings>) =>
+      this.previewFormatExpression({ ...this.settings, ...patch })
+    return [
+      { label: '最佳画质', expr: await expr({ preset: 'best' }), note: '自动挑最优视频轨与音频轨' },
+      {
+        label: '1080p',
+        expr: await expr({ preset: 'maxHeight', maxHeight: 1080 }),
+        note: '不超过 1920×1080',
+      },
+      {
+        label: '720p',
+        expr: await expr({ preset: 'maxHeight', maxHeight: 720 }),
+        note: '省流量',
+      },
+      {
+        label: '仅音频 MP3',
+        expr: await expr({ preset: 'audioOnly' }),
+        note: '提取音频并转码',
+      },
+    ]
+  }
+
+  async previewFormatExpression(settings: Settings): Promise<string> {
+    // 镜像 `ytdlp_core::preset_expression_with`；真源在 Rust，见上面的说明。
+    const v = settings.preferVcodec ? `[vcodec^=${settings.preferVcodec}]` : ''
+    const a = settings.preferAcodec ? `[acodec^=${settings.preferAcodec}]` : ''
+    if (settings.preset === 'audioOnly') return a ? `ba${a}/ba/b` : 'ba/b'
+    const h = settings.preset === 'maxHeight' ? `[height<=${settings.maxHeight}]` : ''
+    const tiers: string[] = []
+    if (v && a) tiers.push(`bv*${h}${v}+ba${a}`)
+    if (v) tiers.push(`bv*${h}${v}+ba`)
+    if (a) tiers.push(`bv*${h}+ba${a}`)
+    tiers.push(`bv*${h}+ba`)
+    tiers.push(h ? `b${h}/b` : 'b')
+    return tiers.join('/')
+  }
+
   async detectJsRuntimes(): Promise<JsRuntimeInfo> {
     return {
       detected: ['node', 'bun'],
@@ -618,6 +703,9 @@ export const api = isTauri()
       testCookieBrowser: (browser: string) => mock().testCookieBrowser(browser),
       listBrowsers: () => mock().listBrowsers(),
       detectJsRuntimes: () => mock().detectJsRuntimes(),
+      codecChoices: () => mock().codecChoices(),
+      formatPresets: () => mock().formatPresets(),
+      previewFormatExpression: (s: Settings) => mock().previewFormatExpression(s),
       testProxy: () => mock().testProxy(),
       checkYtdlpUpdate: () => mock().checkYtdlpUpdate(),
       applyYtdlpUpdate: () => mock().applyYtdlpUpdate(),

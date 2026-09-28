@@ -242,4 +242,6 @@ export const defaultSettings: Settings = {
   limitRate: '',
   filenameTemplate: '%(title).150B [%(id)s].%(ext)s',
   jsRuntime: '',
+  preferVcodec: '',
+  preferAcodec: '',
 }

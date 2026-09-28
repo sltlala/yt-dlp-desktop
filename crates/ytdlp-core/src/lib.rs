@@ -21,8 +21,9 @@ pub mod version;
 
 pub use args::{
     build_download_args, build_probe_args, format_expression_for, playlist_items_spec,
-    preset_expression, progress_template, resolve_container, AudioFormat, Container, CookieSource,
-    DownloadSpec, EmbedOptions, JsRuntimeOptions, Preset, FILEPATH_FILE, JS_RUNTIMES,
+    preset_expression, preset_expression_with, progress_template, resolve_container, AudioFormat,
+    CodecPreference, Container, CookieSource, DownloadSpec, EmbedOptions, JsRuntimeOptions, Preset,
+    AUDIO_CODEC_CHOICES, FILEPATH_FILE, JS_RUNTIMES, VIDEO_CODEC_CHOICES,
 };
 pub use cookies::{classify_browser_probe, validate_netscape, BrowserProbe, CookieError};
 pub use locate::{

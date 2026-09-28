@@ -215,6 +215,36 @@ export interface Settings {
    * n-sig 挑战需要它——不给就会返回「需要重载页面」或只给 storyboard。
    */
   jsRuntime: string
+  /**
+   * 「优先选择」的视频编码，空串 = 不指定。
+   *
+   * 值必须是 **yt-dlp 实际报出的编码名前缀**（`avc1` / `vp9` / `av01`），
+   * 白名单在 `ytdlp_core::VIDEO_CODEC_CHOICES`。界面的选择项由后端生成，
+   * 不要在这里另写一份。
+   */
+  preferVcodec: string
+  /** 「优先选择」的音频编码（`mp4a` / `opus` / `vorbis`）。 */
+  preferAcodec: string
+}
+
+/** 一个可选的编码偏好。 */
+export interface CodecChoice {
+  /** 空串表示「不指定」。 */
+  value: string
+  label: string
+}
+
+/** 「优先选择」的两组候选，由后端白名单生成。 */
+export interface CodecChoices {
+  video: CodecChoice[]
+  audio: CodecChoice[]
+}
+
+/** 格式选择器里的一条预设。`expr` 由后端按当前编码偏好算好。 */
+export interface FormatPreset {
+  label: string
+  note: string
+  expr: string
 }
 
 /** JS 运行时检测结果。 */
