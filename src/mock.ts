@@ -260,4 +260,5 @@ export const defaultSettings: Settings = {
   jsRuntime: '',
   preferVcodec: '',
   preferAcodec: '',
+  impersonate: false,
 }

@@ -1156,6 +1156,25 @@ const templateWarning = computed(() => {
             {{ proxyProbe.summary }}
           </p>
 
+          <h3>反爬拦截</h3>
+          <label class="check">
+            <input v-model="s.impersonate" type="checkbox" />
+            <span>
+              绕过 Cloudflare 拦截
+              <em>开启浏览器指纹模拟（仅对通用提取器）</em>
+            </span>
+          </label>
+          <p class="note">
+            有些站点用 Cloudflare 挡机器人，会返回
+            <strong>HTTP 403</strong> 并提示
+            <code>try again with --extractor-args "generic:impersonate"</code>。
+            勾上这项即可——它就是那个参数，只是不用自己去敲命令行。
+          </p>
+          <p class="note warn">
+            默认关闭是因为 yt-dlp 自己也不默认开：强制模拟会<strong>拖慢速度、降低稳定性</strong>。
+            所以遇到拦截再打开，别一直挂着。
+          </p>
+
           <h3>Cookie</h3>
           <div class="seg">
             <button :class="{ on: s.cookieMode === 'none' }" @click="s.cookieMode = 'none'">不用</button>

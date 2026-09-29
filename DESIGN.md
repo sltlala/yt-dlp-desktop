@@ -664,6 +664,64 @@ YouTube 的 n-sig / player 挑战要用 JS 解。`--no-js-runtimes` 的帮助文
 > **整个设置面板白屏**。现在 `normalize_settings` 按 `default_settings()` 递归补齐
 > （`merge_defaults`），新键不会再引发这类崩溃。
 
+### 7.6 Cloudflare 反爬拦截（`generic:impersonate`）
+
+有些站点套了 Cloudflare，yt-dlp 会报：
+
+```
+ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge;
+try again with --extractor-args "generic:impersonate"
+```
+
+界面用户没法敲命令行，所以设置页「网络与账号 → 绕过 Cloudflare 拦截」直接对应
+这个开关（`args::GENERIC_IMPERSONATE_ARG`），探测与下载**两处都带**。
+
+#### 那句建议是怎么来的（读过 `yt_dlp/extractor/generic.py`）
+
+```python
+# Do not impersonate by default; see https://github.com/yt-dlp/yt-dlp/issues/11335
+impersonate = self._configuration_arg('impersonate', ['false'])
+if 'false' in impersonate:
+    impersonate = None
+...
+except ExtractorError as e:
+    if not isinstance(e.cause, HTTPError) or e.cause.status != 403:
+        raise
+    already_impersonating = res.extensions.get('impersonate') is not None
+    if already_impersonating or (cf-mitigated 不是 challenge 且标题不是 Attention Required!):
+        raise                       # ← 不是真的 CF 挑战，原样抛出
+    msg = 'Got HTTP Error 403 caused by Cloudflare anti-bot challenge; '
+    if not self._downloader._impersonate_target_available(ImpersonateTarget()):
+        msg += 'see https://github.com/yt-dlp/yt-dlp#impersonation ... and '
+    raise ExtractorError(f'{msg}try again with  --extractor-args "generic:impersonate"')
+```
+
+三个可用的推论：
+
+1. **只有真的撞上挑战才给这句建议**（`cf-mitigated: challenge`，或页面标题是
+   `Attention Required! | Cloudflare`）。所以看到这句话，就说明确实是 CF 拦截。
+2. 报错里**没有**那段「去装 impersonation 依赖」时，说明
+   `_impersonate_target_available()` 为真——即**随包的 yt-dlp 已经带了
+   `curl_cffi`**（实测 `--list-impersonate-targets` 列出 17 个目标）。
+3. **已经在模拟还撞上**的话，`already_impersonating` 为真直接 re-raise，
+   **不会**再给这句建议。所以「开着还报一模一样的错」= 模拟没骗过去，
+   而不是开关没生效。
+
+#### 为什么用 `generic:impersonate` 而不是全局 `--impersonate`
+
+- 全局那个作用于**所有**请求，连本来正常的站点也一起改 TLS 指纹。
+  yt-dlp 的帮助文本明确警告：*forcing impersonation for all requests may have a
+  detrimental impact on download speed and stability*。
+- 报这个错的**永远是 generic 提取器**（链接没被专门的提取器认领时），
+  所以只给它开，影响面最小。
+
+**默认关**，与 yt-dlp 自己的取法一致（见上面那段 `['false']` 与 issue #11335）。
+单测钉住三件事：默认不传、打开后探测与下载都带、永远不退化成全局 `--impersonate`。
+
+> ⚠️ 未验证的部分：手里没有 Cloudflare 站点可测，所以**只验证到「参数拼对了、
+> yt-dlp 接受这个写法」**（本地实测不报 invalid extractor argument），
+> 没有跑通一次真实的「开启后 403 变 200」。
+
 ---
 
 ## 8. 更新链路（三条独立）

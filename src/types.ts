@@ -235,6 +235,13 @@ export interface Settings {
   preferVcodec: string
   /** 「优先选择」的音频编码（`mp4a` / `opus` / `vorbis`）。 */
   preferAcodec: string
+  /**
+   * 对 **generic 提取器**开启浏览器指纹模拟，用来过 Cloudflare 反爬拦截。
+   *
+   * 默认关：yt-dlp 自己默认也不做，因为强制模拟会拖慢速度、降低稳定性。
+   * 撞上拦截时错误信息里会指到这个开关。
+   */
+  impersonate: boolean
 }
 
 /** 一个可选的编码偏好。 */

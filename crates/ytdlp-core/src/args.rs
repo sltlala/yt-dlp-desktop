@@ -384,6 +384,28 @@ pub struct DownloadSpec {
     /// 「优先选择」的音视频编码。只作用于 `format_override` 为空时的预设表达式
     /// （见 [`preset_expression_with`]）。
     pub codec: CodecPreference,
+    /// 对 **generic 提取器**启用浏览器指纹模拟（curl_cffi），用来过 Cloudflare 拦截。
+    ///
+    /// ## 为什么默认**关**
+    ///
+    /// yt-dlp 自己默认就不做模拟（源码里写着 `impersonate = ['false']`，
+    /// 注释指向 issue #11335），帮助文本也警告「强制给所有请求做模拟会拖慢速度、
+    /// 降低稳定性」。所以这是**遇到拦截才需要打开**的开关，不是默认值。
+    ///
+    /// ## 为什么用 `generic:impersonate` 而不是全局 `--impersonate`
+    ///
+    /// 全局那个会影响**所有**请求（包括本来正常的站点）；而报这个错的永远是
+    /// generic 提取器（链接没被专门的提取器认领时）。只给它开，影响面最小。
+    ///
+    /// ## 那句报错是怎么来的（读过 yt-dlp 源码）
+    ///
+    /// `yt_dlp/extractor/generic.py`：只有真的撞上 Cloudflare 挑战
+    /// （`cf-mitigated: challenge` 或页面标题是 "Attention Required!"）**并且**
+    /// 当时**没有**在模拟时，才抛
+    /// `try again with --extractor-args "generic:impersonate"`。
+    /// 所以看到那句话 = 这个开关就是解法；反过来，**开着还报同样的错**说明
+    /// 模拟没骗过去（此时 yt-dlp 不会再给那句建议）。
+    pub impersonate: bool,
 }
 
 /// 把勾选的下标（0-based）转成 `--playlist-items` 的值。
@@ -448,6 +470,7 @@ impl DownloadSpec {
             playlist_items: None,
             js: JsRuntimeOptions::default(),
             codec: CodecPreference::default(),
+            impersonate: false,
         }
     }
 
@@ -495,6 +518,21 @@ pub fn format_expression_for(
 
 // ─────────────────────────── 探测 ───────────────────────────
 
+/// `--extractor-args` 的值。原样照抄 yt-dlp 报错里给的那串
+/// （空值 = 任意客户端）。
+pub const GENERIC_IMPERSONATE_ARG: &str = "generic:impersonate";
+
+/// 给 generic 提取器开启指纹模拟。
+///
+/// ⚠️ 不要改成 `--impersonate`：那是**全局**的，会影响所有请求，
+/// 连本来正常的站点也一起改指纹（yt-dlp 的帮助文本因此警告会拖慢速度、降低稳定性）。
+fn push_impersonate_args(a: &mut Vec<String>, impersonate: bool) {
+    if impersonate {
+        a.push("--extractor-args".into());
+        a.push(GENERIC_IMPERSONATE_ARG.into());
+    }
+}
+
 /// `--dump-single-json` 探测元数据。
 ///
 /// Cookie 必须在此阶段就生效：很多站点不登录连元数据都拿不到（DESIGN §6）。
@@ -517,6 +555,7 @@ pub fn build_probe_args(
     flat_playlist: bool,
     js: &JsRuntimeOptions,
     format: Option<&str>,
+    impersonate: bool,
 ) -> Vec<String> {
     let mut a: Vec<String> = vec![
         "--dump-single-json".into(),
@@ -543,6 +582,7 @@ pub fn build_probe_args(
 
     // 探测阶段同样要 JS 运行时——否则拿到的就是降级结果
     push_js_args(&mut a, js);
+    push_impersonate_args(&mut a, impersonate);
     push_proxy(&mut a, proxy);
     push_cookies(&mut a, cookies);
     a.push("--".into());
@@ -599,6 +639,8 @@ pub fn build_download_args(spec: &DownloadSpec) -> Vec<String> {
     // JS 运行时放在前面：它是「能不能拿到真实格式」的前提，
     // 不是可选优化（见 JsRuntimeOptions 的说明）。
     push_js_args(&mut a, &spec.js);
+    // 过 Cloudflare 拦截（默认关，见 DownloadSpec::impersonate）
+    push_impersonate_args(&mut a, spec.impersonate);
 
     // ── 格式 ──
     a.push("--format".into());
@@ -1082,6 +1124,7 @@ mod tests {
             false,
             &JsRuntimeOptions::default(),
             None,
+            false,
         );
         assert!(a.contains(&"--cookies".to_string()));
         assert!(a.contains(&"http://127.0.0.1:7897".to_string()));
@@ -1099,6 +1142,7 @@ mod tests {
             true,
             &JsRuntimeOptions::default(),
             None,
+            false,
         );
         assert!(a.contains(&"--flat-playlist".to_string()));
         assert!(!a.contains(&"--no-playlist".to_string()));
@@ -1116,6 +1160,7 @@ mod tests {
             false,
             &JsRuntimeOptions::default(),
             None,
+            false,
         );
         assert!(p.contains(&"socks5://127.0.0.1:1080".to_string()));
     }
@@ -1184,7 +1229,7 @@ mod tests {
     #[test]
     fn js_runtimes_wired_into_probe_args() {
         let js = JsRuntimeOptions::new(vec!["node".into()], false);
-        let a = build_probe_args("https://x", None, None, true, &js, None);
+        let a = build_probe_args("https://x", None, None, true, &js, None, false);
         let i = a.iter().position(|x| x == "--js-runtimes").unwrap();
         assert_eq!(a[i + 1], "node");
         // 探测阶段必须也有——否则拿到的是降级结果
@@ -1218,7 +1263,7 @@ mod tests {
         assert!(!a.contains(&"--remote-components".to_string()));
 
         let js = JsRuntimeOptions::default();
-        let p = build_probe_args("https://x", None, None, false, &js, None);
+        let p = build_probe_args("https://x", None, None, false, &js, None, false);
         assert!(!p.contains(&"--js-runtimes".to_string()));
     }
 
@@ -1226,11 +1271,12 @@ mod tests {
     /// （即预估大小的来源）。空/空白表达式视为「不传」，免得产出非法的 `-f`。
     #[test]
     fn probe_passes_format_only_when_given() {
-        let none = build_probe_args("https://x", None, None, true, &JsRuntimeOptions::default(), None);
+        let none = build_probe_args("https://x", None, None, true, &JsRuntimeOptions::default(), None, false);
         assert!(!none.contains(&"--format".to_string()));
 
         let blank = build_probe_args(
             "https://x", None, None, true, &JsRuntimeOptions::default(), Some("   "),
+            false,
         );
         assert!(!blank.contains(&"--format".to_string()), "空白不能变成空的 -f");
 
@@ -1241,11 +1287,57 @@ mod tests {
             true,
             &JsRuntimeOptions::default(),
             Some("bv*+ba/b"),
+            false,
         );
         let i = a.iter().position(|x| x == "--format").unwrap();
         assert_eq!(a[i + 1], "bv*+ba/b");
         // 表达式必须落在 URL 之前，且 URL 前仍有 `--` 分隔
         assert!(i < a.iter().position(|x| x == "--").unwrap());
+    }
+
+    // ─────────── 过 Cloudflare 拦截（DESIGN §7.6）───────────
+
+    /// 默认**不传**：yt-dlp 自己默认也不模拟，强开会拖慢速度、降低稳定性。
+    #[test]
+    fn impersonate_is_off_by_default() {
+        let s = spec();
+        assert!(!s.impersonate);
+        let d = build_download_args(&s);
+        assert!(
+            !d.iter().any(|x| x == "--extractor-args"),
+            "默认不该出现 --extractor-args"
+        );
+        let p = build_probe_args("https://x", None, None, true, &JsRuntimeOptions::default(), None, false);
+        assert!(!p.iter().any(|x| x == "--extractor-args"));
+    }
+
+    /// 打开后，**探测与下载两处都要带上**——只有一边带的话，
+    /// 会出现「探测拿到了元数据、下载却 403」这种完全指不到原因的错。
+    #[test]
+    fn impersonate_is_applied_to_both_probe_and_download() {
+        let mut s = spec();
+        s.impersonate = true;
+
+        let d = build_download_args(&s);
+        let i = d.iter().position(|x| x == "--extractor-args").unwrap();
+        assert_eq!(d[i + 1], GENERIC_IMPERSONATE_ARG);
+        // 必须落在 URL 之前
+        assert!(i < d.iter().position(|x| x == "--").unwrap());
+
+        let p = build_probe_args("https://x", None, None, true, &JsRuntimeOptions::default(), None, true);
+        let j = p.iter().position(|x| x == "--extractor-args").unwrap();
+        assert_eq!(p[j + 1], GENERIC_IMPERSONATE_ARG);
+    }
+
+    /// ⚠️ 必须是**按提取器**的那个写法，不能退化成全局 `--impersonate`：
+    /// 全局会把本来正常的站点也一起改指纹（yt-dlp 明确警告过代价）。
+    #[test]
+    fn impersonate_never_uses_the_global_flag() {
+        let mut s = spec();
+        s.impersonate = true;
+        let d = build_download_args(&s);
+        assert!(!d.iter().any(|x| x == "--impersonate"), "不能用全局 --impersonate");
+        assert_eq!(GENERIC_IMPERSONATE_ARG, "generic:impersonate");
     }
 
     /// `--remote-components` 默认关闭：官方 exe 不需要它，且实测会慢 40 秒。

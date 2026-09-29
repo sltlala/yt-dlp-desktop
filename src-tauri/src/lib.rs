@@ -67,7 +67,11 @@ fn default_settings() -> Value {
         // 不给的话 YouTube 会返回「需要重载页面」或只给 storyboard。
         // 注意这里**没有** `jsRemoteComponents`：界面上已经不提供那个开关，
         // 但 `runner::js_of` 仍然读它，好让需要的人改 config.json 打开。
-        "jsRuntime": ""
+        "jsRuntime": "",
+        // 对 generic 提取器开启指纹模拟，过 Cloudflare 拦截。
+        // **默认关**：yt-dlp 自己默认也不做（issue #11335），它的帮助文本
+        // 明确警告强制模拟会拖慢速度、降低稳定性。撞上拦截时界面上会指过来。
+        "impersonate": false
     })
 }
 
@@ -653,8 +657,15 @@ async fn probe_formats(
 
     // 这里只为了拿格式表，不需要预估大小（`None` = 不传 `-f`）。
     // 表达式不可满足时会让整个探测失败，这条路径没必要冒那个险。
-    let args =
-        ytdlp_core::build_probe_args(&url, proxy.as_deref(), cookie.as_ref(), false, &js, None);
+    let args = ytdlp_core::build_probe_args(
+        &url,
+        proxy.as_deref(),
+        cookie.as_ref(),
+        false,
+        &js,
+        None,
+        runner::impersonate_of(&settings),
+    );
     let out = tokio::process::Command::new(exe)
         .args(&args)
         .env("PYTHONIOENCODING", "utf-8")

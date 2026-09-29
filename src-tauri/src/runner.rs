@@ -110,6 +110,8 @@ pub fn spec_from_settings(settings: &Value, url: &str, task_id: &str) -> Downloa
     spec.js = js;
     // 编码偏好：只影响预设表达式（见 CodecPreference 的说明）
     spec.codec = codec_of(settings);
+    // 过 Cloudflare 拦截（默认关，见 DownloadSpec::impersonate）
+    spec.impersonate = impersonate_of(settings);
     spec
 }
 
@@ -552,7 +554,7 @@ pub fn redact_proxy(url: &str) -> String {
     }
 }
 
-/// 从设置里取「优先选择」的编码。
+/// 「优先选择」的编码，见 `CodecPreference`。
 ///
 /// ⚠️ 走 `CodecPreference::sanitized` 的白名单，**不能直接把设置里的字符串拼进
 /// `-f`**：实测任何非法过滤器都会让 yt-dlp 抛 `SyntaxError` 并打印 Python
@@ -566,6 +568,17 @@ pub fn codec_of(settings: &Value) -> CodecPreference {
             .to_string()
     };
     CodecPreference::sanitized(&g("preferVcodec"), &g("preferAcodec"))
+}
+
+/// 是否对 generic 提取器开启指纹模拟（过 Cloudflare 拦截）。
+///
+/// 探测与下载两处**必须一致**：只有一边开的话，探测能拿到元数据、下载却 403
+/// （或反过来），报的错会完全指不到原因。
+pub fn impersonate_of(settings: &Value) -> bool {
+    settings
+        .get("impersonate")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// 从设置里取 JS 运行时配置。
@@ -750,6 +763,7 @@ async fn probe_once(
         true,
         &js,
         format,
+        impersonate_of(settings),
     );
 
     let out = tokio::process::Command::new(exe)
@@ -862,6 +876,16 @@ fn classify_error(stderr: &str, code: Option<i32>) -> String {
              拿不到真实流时（只返回 storyboard 预览图）也会报这个错。\n\
              可以用 `yt-dlp -F <链接>` 看看实际列出了什么。\n\
              原始信息：{}",
+            l.trim()
+        );
+    }
+    // 站点用了 Cloudflare 反爬：yt-dlp 自己给出的解法是开指纹模拟，
+    // 但那是个命令行参数，界面用户够不着——所以这里直接指到那个开关上。
+    if let Some(l) = pick("Cloudflare anti-bot challenge") {
+        return format!(
+            "这个站点有 Cloudflare 反爬拦截（HTTP 403）。\n\
+             解法：打开「设置 → 网络与账号 → 绕过 Cloudflare 拦截」再试一次。\n\
+             {}",
             l.trim()
         );
     }
