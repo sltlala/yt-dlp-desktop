@@ -85,6 +85,34 @@ target\debug\ytdlp-desktop.exe
 
 界面支持 `?panel=settings|detail|formats|playlist` 直接打开对应视图，便于截图与视觉回归。
 
+### ⚠️ 启动前先关掉**已安装的那份**
+
+两个实例**不能同时开**：它们共用同一个 WebView2 用户数据目录，第二个会直接在
+启动时崩掉——
+
+```
+Failed to setup app: runtime error: failed to create webview:
+WebView2 error: WindowsError(Error { code: HRESULT(0x8007139F),
+message: "组或资源的状态不是执行请求操作的正确状态。" })
+```
+
+（实测踩过：装好的 release 版开着时，`npm run tauri:dev` 必崩，报错完全指不到原因。）
+
+两种做法：
+
+```powershell
+# ① 最省事：先退出已安装的应用，再起 dev
+Get-Process ytdlp-desktop | Stop-Process
+
+# ② 想让两份同时开着：给 dev 一份独立的 WebView2 数据目录
+$env:WEBVIEW2_USER_DATA_FOLDER = "$env:TEMP\ytdlp-dev-ebwebview"
+npm run tauri:dev
+```
+
+> 另外注意：dev 版默认和已安装版**读写同一份数据**（`%APPDATA%\ytdlp-desktop\`）。
+> 不想让它动到你的真实设置和历史，就在 `target\debug\` 放一个 `portable.txt`
+> （见上文「数据存在哪」），dev 就会用 `target\debug\data\` 自己的那份。
+
 ### ⚠️ 不要在 `tauri:dev` 运行时跑 `cargo` 命令
 
 `tauri dev` 会**监视文件变化并自动重编译**。此时另开一个终端跑 `cargo test` /
