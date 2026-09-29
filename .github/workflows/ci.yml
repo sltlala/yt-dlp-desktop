@@ -77,7 +77,10 @@ jobs:
         with:
           # 带上 commit，下载列表里一眼能看出是哪个提交
           name: yt-dlp-desktop-${{ github.sha }}
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          # ⚠️ 是**仓库根目录**下的 target/，不是 src-tauri/target/：
+          # 这是个 cargo workspace，target 目录在根上（本地 target\debug\ytdlp-desktop.exe
+          # 也在根上）。写成 src-tauri/... 会静默匹配不到，白跑一次完整构建。
+          path: target/release/bundle/nsis/*.exe
           # 路径写错时**直接失败**，别静默传个空包上去
           if-no-files-found: error
           retention-days: 90

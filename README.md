@@ -159,6 +159,9 @@ Windows 安装包**，挂在这次运行的 **Artifacts** 里（保留 90 天）
 - 它只产出**构建产物**，不建 Release、不占用 Releases 列表；正式发版仍走 tag。
 - 每次都要完整编译一遍 Rust（含 rusqlite 的 bundled SQLite），靠
   `swatinem/rust-cache` 缓存 `target/`，冷启动十几分钟、有缓存快得多。
+- ⚠️ 产物落在**仓库根目录**的 `target/release/bundle/nsis/`，**不是**
+  `src-tauri/target/`——这是个 cargo workspace，`target/` 在根上
+  （本地的 `target\debug\ytdlp-desktop.exe` 也在根上）。
 
 ### 正式发版
 
