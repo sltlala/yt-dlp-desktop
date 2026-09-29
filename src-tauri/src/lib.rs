@@ -3,6 +3,7 @@
 //! 设计上刻意保持「薄」：所有参数构造与输出解析都在 `ytdlp-core` 里，
 //! 这里只负责进程生命周期、持久化与前后端桥接。
 
+mod clipboard;
 mod cookies;
 mod net;
 mod paths;
@@ -859,6 +860,15 @@ fn preview_format_expression(settings: Value) -> String {
     )
 }
 
+/// 读系统剪贴板的纯文本，供右键菜单的「粘贴」用。
+///
+/// 前端做不了这件事：`navigator.clipboard.readText()` 在 WebView2 里会卡在
+/// 权限弹窗上，`execCommand('paste')` 恒为 false。详见 `clipboard` 模块。
+#[tauri::command]
+fn read_clipboard() -> Result<String, String> {
+    clipboard::read_text()
+}
+
 /// aria2c 可执行文件信息，供设置页展示。
 ///
 /// 用户需要知道**当前用的是哪一份**：随包的出厂副本、还是 PATH 上那份旧的。
@@ -999,6 +1009,7 @@ pub fn run() {
             codec_choices,
             format_presets,
             preview_format_expression,
+            read_clipboard,
             check_ytdlp_update,
             apply_ytdlp_update,
             test_proxy,

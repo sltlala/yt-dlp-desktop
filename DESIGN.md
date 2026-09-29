@@ -655,41 +655,60 @@ Tauri 的 WebView2 默认弹出 **Edge 的浏览器菜单**。在一个桌面应
 弹出来的还是**整份浏览器菜单**——表情符号 / 导入密码 / 书写方向 / 更多工具 / 检查。
 放行原生菜单等于放行**全部**浏览器入口，没有中间态。
 
-现在的做法：**除了输入框，一律压掉**，然后弹一个我们自己的菜单
-（`src/contextMenu.ts`）：
+现在的做法：**一律压掉**，需要什么就自己实现什么（`src/contextMenu.ts`）：
 
-| 右键位置 | 行为 |
+| 右键位置 | 菜单 |
 |---|---|
-| 有选中文字 | 压掉原生，弹「复制」 |
-| 无选中、非输入框 | 只压掉，不弹任何东西 |
-| 输入框 | **放行原生菜单**（见下） |
+| 输入框有选中 | 剪切 / 复制 / 粘贴 / 全选 |
+| 输入框无选中 | 粘贴 / 全选 |
+| 非输入框、有选中文字 | 复制 |
+| 其它 | 不弹任何东西 |
 
-「复制」我们自己实现：`navigator.clipboard.writeText`，失败回落到隐藏 textarea +
-`execCommand('copy')`。菜单用 fixed + `clientX/clientY` 定位并夹进视口，
-点外部 / 滚动 / Esc / 失焦都收起。
+| 动作 | 实现 |
+|---|---|
+| 复制 | `navigator.clipboard.writeText`，失败回落隐藏 textarea + `execCommand('copy')` |
+| 剪切 | 先复制，再 `execCommand('delete')` |
+| 粘贴 | **走后端**读剪贴板（`read_clipboard` 命令），再 `execCommand('insertText')` |
+| 全选 | input/textarea 用 `.select()`，其余 `execCommand('selectAll')` |
 
-#### 为什么输入框必须放行
+菜单用 fixed + `clientX/clientY` 定位并夹进视口，点外部 / 滚动 / Esc / 失焦都收起。
+菜单项用 `mousedown` 而不是 `click`，并且 `preventDefault`——这样焦点留在原输入框上，
+粘贴才有落点。
 
-**粘贴做不了**，只能靠原生菜单：
+用 `execCommand('insertText')` 而不是直接改 `.value`：前者会**触发 input 事件**
+（Vue 的 v-model 靠它同步）也进撤销栈，直接赋值两样都没有。
 
-- `navigator.clipboard.readText()` 在 WebView2 里会**挂住**——实测它等一个
-  权限弹窗（`edge://permission-request-dialog/`），没人点就永远不返回；
+#### 粘贴为什么必须走后端
+
+前端读剪贴板在 WebView2 里**做不到**：
+
+- `navigator.clipboard.readText()` 会**卡住**——实测它等在一个
+  `edge://permission-request-dialog/` 权限弹窗上，没人点就永远不返回；
 - `document.execCommand('paste')` 恒返回 `false`（Chromium 出于安全禁掉了）。
 
-而输入框正是粘贴最常用的地方（添加链接）。所以那里保留原生菜单，
-代价是输入框上仍会看到浏览器菜单——这是「能用」与「干净」之间**有意识**的取舍。
+所以 `src-tauri/src/clipboard.rs` 直接调 Win32（`user32` + `kernel32`，
+**不引额外 crate**，与 `shell.rs` 同样的取舍）。**写**不需要走后端：
+`writeText` 只要用户手势就能用，实测真实左键点击后确实写进去了。
 
-> 想彻底干净就得走后端剪贴板（Tauri clipboard 插件），目前不做。
+> 这一版之前试过「输入框放行原生菜单」来保住粘贴，代价是输入框上仍会看到
+> 导入密码 / 表情符号 / 检查。既然粘贴能自己做，就没必要再放行任何东西。
 
 #### 验证方式
 
 页面里 `dispatchEvent` 造的是**不可信事件**，没有 user activation，
 `writeText` 与 `execCommand('copy')` 都会拒绝——这样测会误判成「复制坏了」。
-必须用 CDP 的 `Input.dispatchMouseEvent` 发真实点击（`scripts/cdp-attach.mjs`
-的同类工具即可），并配合 `scripts/focus-window.ps1` 把窗口置前
-（文档不聚焦时剪贴板 API 一律报 `NotAllowedError: Document is not focused`）。
+必须用 CDP 的 `Input.dispatchMouseEvent` 发真实点击，并配合
+`scripts/focus-window.ps1` 把窗口置前（文档不聚焦时剪贴板 API 一律报
+`NotAllowedError: Document is not focused`）。
 
-实测：选中标题 → 右键 → 只出现「复制」一项 → 真实左键点击 → 剪贴板里正是那段文字。
+实测：
+
+| 场景 | 结果 |
+|---|---|
+| 选中标题 → 右键 | 原生菜单被压掉，只出现「复制」；真实点击后 `Get-Clipboard` 里正是那段文字 |
+| 「添加任务」输入框 → 右键 | 只出现「粘贴 / 全选」，无浏览器菜单 |
+| 点「粘贴」 | 输入框内容变成剪贴板里的 URL（走 `read_clipboard`） |
+| 输入框内有选中 → 右键 | 剪切 / 复制 / 粘贴 / 全选 四项 |
 
 > 副作用：DevTools 的入口没了。开发期本来也不靠它——工具走
 > `--remote-debugging-port` + `scripts/cdp-attach.mjs`（见 RESUME）；

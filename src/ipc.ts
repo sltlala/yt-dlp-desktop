@@ -121,6 +121,13 @@ const tauriBackend = {
   /** 检测本机可用的 JS 运行时——YouTube 的 n-sig 挑战靠它。 */
   detectJsRuntimes: () => invoke<JsRuntimeInfo>('detect_js_runtimes'),
   /**
+   * 读系统剪贴板纯文本，供右键菜单的「粘贴」用。
+   *
+   * 前端自己读不了：`navigator.clipboard.readText()` 在 WebView2 里会卡在权限
+   * 弹窗上，`execCommand('paste')` 恒为 false（见 `src-tauri/src/clipboard.rs`）。
+   */
+  readClipboard: () => invoke<string>('read_clipboard'),
+  /**
    * 「优先选择」的编码候选。**不要在前端另写一份**——白名单在后端，
    * 两边分叉的后果是静默退化（后端丢弃不认识的值，界面上看不出来）。
    */
@@ -616,6 +623,12 @@ class MockBackend {
     return tiers.join('/')
   }
 
+  async readClipboard(): Promise<string> {
+    // mock 里没有真剪贴板；返回空串 → 右键菜单的「粘贴」点了没反应，
+    // 但那只是浏览器里跑 mock 时的表现，不影响桌面版。
+    return ''
+  }
+
   async detectJsRuntimes(): Promise<JsRuntimeInfo> {
     return {
       detected: ['node', 'bun'],
@@ -706,6 +719,7 @@ export const api = isTauri()
       testCookieBrowser: (browser: string) => mock().testCookieBrowser(browser),
       listBrowsers: () => mock().listBrowsers(),
       detectJsRuntimes: () => mock().detectJsRuntimes(),
+      readClipboard: () => mock().readClipboard(),
       codecChoices: () => mock().codecChoices(),
       formatPresets: () => mock().formatPresets(),
       previewFormatExpression: (s: Settings) => mock().previewFormatExpression(s),

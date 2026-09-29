@@ -3,30 +3,37 @@
  *
  * Tauri 用的 WebView2 默认弹 Edge 的浏览器菜单。在桌面应用里这既不像原生，
  * 也有实际危害：「刷新」会丢掉没保存的设置改动，「检查」会把 DevTools 开在界面上。
- * 就算只是选中一段文字再右键，弹出来的也是整份浏览器菜单
- * （表情符号 / 导入密码 / 书写方向 / 更多工具 / 检查）——用户看到的就是这个。
  *
- * ## 为什么不做「选中文字就放行原生菜单」
+ * ## 一条踩出来的结论：不要「放行原生菜单」这条中间路线
  *
- * 第一版就是这么写的：输入框与「有选中文字」时都放行。结果是选中链接再右键，
- * 浏览器菜单原样回来——用户的反馈正是「怎么还有导入密码」。**放行原生菜单等于
- * 放行全部浏览器入口**，没有中间态。
+ * 第一版规则是「不是输入框、也没有选中文字时才压掉」，想着「选中文字时留原生菜单
+ * 好让用户复制」。结果选中链接再右键，弹出来的是**整份**浏览器菜单
+ * （表情符号 / 导入密码 / 书写方向 / 更多工具 / 检查）。
+ * 第二版把输入框也放行（为了粘贴），用户在「添加任务」输入框上又碰到了同样的问题。
  *
- * ## 粘贴为什么只能靠原生菜单
+ * **放行原生菜单等于放行全部浏览器入口**，没有中间态。所以现在一律压掉，
+ * 需要什么就自己实现什么。
  *
- * 剪贴板**读**在 Chromium 里要 `clipboard-read` 权限。实测 WebView2 里
- * `navigator.clipboard.readText()` 会**直接挂住**（等一个没人能回答的授权），
- * `document.execCommand('paste')` 更是恒返回 false。所以「粘贴」这一项我们做不了，
- * 只能把原生菜单留在输入框上——那里正是粘贴最常用的地方（添加链接）。
- * 其它地方一律换成我们自己的菜单。
+ * ## 各项是怎么实现的
  *
- * 写剪贴板则没问题（不需要权限，只要用户手势），`复制` 由我们自己做。
+ * | 动作 | 做法 |
+ * |---|---|
+ * | 复制 | `navigator.clipboard.writeText`，失败回落隐藏 textarea + `execCommand('copy')` |
+ * | 剪切 | 先复制，再 `execCommand('delete')` |
+ * | 粘贴 | **走后端**读剪贴板（`api.readClipboard()`），再 `execCommand('insertText')` |
+ * | 全选 | input/textarea 用 `.select()`，其余用 `execCommand('selectAll')` |
+ *
+ * 「粘贴」是唯一前端做不了的：`navigator.clipboard.readText()` 在 WebView2 里会卡在
+ * 权限弹窗上，`execCommand('paste')` 恒为 false（原因见 `src-tauri/src/clipboard.rs`）。
+ *
+ * 用 `execCommand('insertText')` 而不是直接改 `.value`：前者会**触发 input 事件**
+ * （Vue 的 v-model 靠它同步），也进撤销栈；直接赋值两样都没有。
  */
+import { api } from './ipc'
 
-/** 一个菜单项。`sep` 表示分隔线。 */
-type Item = { label: string; hint?: string; run: () => void } | 'sep'
+/** 一个菜单项。 */
+type Item = { label: string; hint?: string; run: () => void | Promise<void> }
 
-/** 触发过一次自定义菜单的标记，便于测试与排查。 */
 let menuEl: HTMLDivElement | null = null
 
 function closeMenu() {
@@ -40,7 +47,7 @@ export async function copyText(text: string): Promise<boolean> {
     await navigator.clipboard.writeText(text)
     return true
   } catch {
-    // 老办法对**当前选区**生效，所以要先造一个选区
+    // 老办法只对**当前选区**生效，所以先造一个选区
     const ta = document.createElement('textarea')
     ta.value = text
     ta.setAttribute('readonly', '')
@@ -64,12 +71,6 @@ function showMenu(x: number, y: number, items: Item[]) {
   el.setAttribute('role', 'menu')
 
   for (const it of items) {
-    if (it === 'sep') {
-      const hr = document.createElement('div')
-      hr.className = 'ctx-sep'
-      el.appendChild(hr)
-      continue
-    }
     const b = document.createElement('button')
     b.type = 'button'
     b.className = 'ctx-item'
@@ -82,52 +83,104 @@ function showMenu(x: number, y: number, items: Item[]) {
       em.textContent = it.hint
       b.appendChild(em)
     }
-    // 用 mousedown 而不是 click：click 之前菜单可能已被外部点击关掉
+    // 用 mousedown 而不是 click：click 之前菜单可能已被外部点击关掉。
+    // preventDefault 还能让焦点留在原来的输入框上——粘贴要靠它。
     b.addEventListener('mousedown', (ev) => {
       ev.preventDefault()
       ev.stopPropagation()
       closeMenu()
-      it.run()
+      void it.run()
     })
     el.appendChild(b)
   }
 
-  // 先挂上去量一次尺寸，再夹到视口内——否则贴边时会被裁掉
+  // 先挂上去量尺寸再夹进视口，否则贴边时会被裁掉
   el.style.left = '-9999px'
   el.style.top = '-9999px'
   document.body.appendChild(el)
   menuEl = el
   const r = el.getBoundingClientRect()
-  const left = Math.min(x, window.innerWidth - r.width - 4)
-  const top = Math.min(y, window.innerHeight - r.height - 4)
-  el.style.left = `${Math.max(4, left)}px`
-  el.style.top = `${Math.max(4, top)}px`
+  el.style.left = `${Math.max(4, Math.min(x, window.innerWidth - r.width - 4))}px`
+  el.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`
 }
 
-/** 当前选中的文字（没有选中则为空串）。 */
 function selectedText(): string {
   const sel = window.getSelection()
   if (!sel || sel.isCollapsed) return ''
   return sel.toString()
 }
 
+/** 可编辑字段里当前选中的片段（用于判断「剪切/复制」能不能点）。 */
+function editableSelection(el: HTMLElement): string {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const { selectionStart: a, selectionEnd: b } = el
+    return a !== null && b !== null && b > a ? el.value.slice(a, b) : ''
+  }
+  return selectedText()
+}
+
+async function doPaste(el: HTMLElement) {
+  el.focus()
+  let text = ''
+  try {
+    text = await api.readClipboard()
+  } catch {
+    return
+  }
+  if (!text) return
+  // insertText 会触发 input 事件（v-model 依赖它）并进撤销栈
+  document.execCommand('insertText', false, text)
+}
+
+function doSelectAll(el: HTMLElement) {
+  el.focus()
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    el.select()
+  } else {
+    document.execCommand('selectAll')
+  }
+}
+
+function itemsFor(target: HTMLElement | null): Item[] {
+  const editable = target?.closest?.(
+    'input, textarea, [contenteditable="true"]',
+  ) as HTMLElement | null
+  const sel = selectedText()
+
+  if (editable) {
+    const own = editableSelection(editable)
+    const items: Item[] = []
+    if (own) {
+      items.push({
+        label: '剪切',
+        hint: 'Ctrl+X',
+        run: async () => {
+          if (await copyText(own)) document.execCommand('delete')
+        },
+      })
+      items.push({ label: '复制', hint: 'Ctrl+C', run: () => void copyText(own) })
+    }
+    items.push({ label: '粘贴', hint: 'Ctrl+V', run: () => doPaste(editable) })
+    items.push({ label: '全选', hint: 'Ctrl+A', run: () => doSelectAll(editable) })
+    return items
+  }
+
+  // 非输入框：只有选中了文字才有得可做
+  if (sel.trim()) {
+    return [{ label: '复制', hint: 'Ctrl+C', run: () => void copyText(sel) }]
+  }
+  return []
+}
+
 export function installContextMenuGuard(): void {
   document.addEventListener(
     'contextmenu',
     (e) => {
-      const el = e.target as HTMLElement | null
-      // 输入框放行：粘贴只能靠原生菜单（见文件头说明）
-      if (el?.closest?.('input, textarea, [contenteditable="true"]')) return
-
-      // 其余一律不弹浏览器菜单
+      // 一律不让浏览器弹自己的菜单
       e.preventDefault()
       e.stopPropagation()
 
-      const text = selectedText()
-      const items: Item[] = []
-      if (text.trim()) {
-        items.push({ label: '复制', hint: 'Ctrl+C', run: () => void copyText(text) })
-      }
+      const items = itemsFor(e.target as HTMLElement | null)
       if (items.length) showMenu(e.clientX, e.clientY, items)
       else closeMenu()
     },
@@ -135,7 +188,7 @@ export function installContextMenuGuard(): void {
     true,
   )
 
-  // 点别处 / 滚动 / 按 Esc / 窗口失焦都要收起来。
+  // 点别处 / 滚动 / 按 Esc / 失焦都要收起来。
   // ⚠️ 点在菜单**自己身上**时不能关：document 的捕获监听比菜单项的监听先跑，
   // 这里要是先把节点摘了，菜单项就再也点不到了。
   document.addEventListener(
