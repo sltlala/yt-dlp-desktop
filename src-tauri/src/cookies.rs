@@ -72,7 +72,9 @@ pub fn save(name: &str, content: &str, origin: &str) -> Result<CookieProfile, St
         name.trim().to_string()
     };
 
-    let id = format!("{:x}", crate::state::now_ms());
+    // ⚠️ 不能只用毫秒时间戳：连续导入两份落在同一毫秒里会撞 id，
+    // 第二个会把第一个的 cookie 文件覆盖掉（见 `state::unique_id`）。
+    let id = crate::state::unique_id("");
     let dir = profiles_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("无法创建 cookie 目录：{e}"))?;
     std::fs::write(profile_path(&id), content).map_err(|e| format!("写入 cookie 文件失败：{e}"))?;
@@ -464,6 +466,23 @@ mod tests {
             assert!(all.iter().any(|p| p.name == "YouTube账号"));
             // 各自的文件都在
             assert!(path_of(&a.id).is_some() && path_of(&b.id).is_some());
+        });
+    }
+
+    /// 上面那条测试原本是**偶发**失败的：id 只取毫秒时间戳，两次 save 落在
+    /// 同一毫秒就撞。这里把它变成确定性回归——**同一毫秒内连存 50 份**，
+    /// 全部 id 必须互不相同，且索引里一条都不能少。
+    ///
+    /// 撞 id 的后果不是「重复」而是**覆盖**：后一份 cookie 文件会顶掉前一份。
+    #[test]
+    fn ids_are_unique_within_the_same_millisecond() {
+        with_temp_appdata(|| {
+            let mut ids = std::collections::HashSet::new();
+            for i in 0..50 {
+                let p = save(&format!("账号{i}"), CONTENT, &format!("f{i}.txt")).unwrap();
+                assert!(ids.insert(p.id.clone()), "第 {i} 份撞了 id：{}", p.id);
+            }
+            assert_eq!(list().len(), 50, "索引里应恰好 50 份，撞 id 会少");
         });
     }
 

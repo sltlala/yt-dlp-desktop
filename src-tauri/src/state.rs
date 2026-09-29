@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// 进度。`total` 为 `None` 表示总大小未知 —— 界面应切「不确定态」而非显示 0%。
@@ -130,6 +130,21 @@ pub fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// 生成一个**进程内唯一**的短 id：毫秒时间戳 + 自增序号。
+///
+/// ⚠️ 只用 `now_ms()` 是不够的：同一毫秒里连续两次调用会拿到**同一个 id**
+/// （CI 上 `cookies::tests::keeps_multiple_profiles` 就是因此偶发失败）。
+/// 撞 id 的后果不是「重复」而是**后者覆盖前者**——
+/// 任务撞 id 会顶掉前一条任务，cookie profile 撞 id 会覆盖掉前一份 cookie 文件，
+/// 而用户粘贴多行链接 / 连续导入几个 cookies.txt 正是最容易撞上的用法。
+///
+/// 序号取低 16 位：够用且不会让 id 变得很长；跨进程由时间戳区分。
+pub fn unique_id(prefix: &str) -> String {
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}{:x}{:04x}", now_ms(), n & 0xffff)
 }
 
 /// 正在运行的任务句柄。
@@ -342,5 +357,34 @@ impl AppState {
     pub fn running_handle(&self, id: &str) -> Option<(u32, Arc<AtomicBool>)> {
         let g = self.running.lock().ok()?;
         g.get(id).map(|p| (p.pid, p.cancel.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `unique_id` 必须在**同一毫秒内连续调用**也不重复。
+    ///
+    /// 只用时间戳的版本在这里必挂——而它对应的真实场景是「粘贴多行链接」：
+    /// 撞 id 会让后一条任务顶掉前一条（不是重复，是覆盖）。
+    #[test]
+    fn unique_id_never_collides_in_a_burst() {
+        let ids: std::collections::HashSet<String> =
+            (0..2000).map(|_| unique_id("t-")).collect();
+        assert_eq!(ids.len(), 2000, "同一批里出现了重复 id");
+
+        // 前缀要保留，且 id 里不能有文件系统不友好的字符（它会被当作目录名）
+        let one = unique_id("t-");
+        assert!(one.starts_with("t-"));
+        assert!(one.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    }
+
+    #[test]
+    fn unique_id_shares_prefix_shape_with_cookies() {
+        // cookies 用空前缀（id 直接当文件名）
+        let c = unique_id("");
+        assert!(!c.starts_with('-'));
+        assert!(c.chars().all(|ch| ch.is_ascii_alphanumeric()));
     }
 }

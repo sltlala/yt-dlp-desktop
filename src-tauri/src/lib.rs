@@ -338,7 +338,7 @@ fn add_url(app: AppHandle, url: String) -> Task {
         .map(str::to_string)
         .unwrap_or_else(|| paths::app_data_root().join("downloads").to_string_lossy().into_owned());
 
-    let id = format!("t-{:x}", state::now_ms());
+    let id = state::unique_id("t-");
     let spec = runner::spec_from_settings(&settings, &url, &id);
 
     let mut task = Task::new(

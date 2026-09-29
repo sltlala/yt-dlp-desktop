@@ -197,6 +197,7 @@ cargo test               # 核心层 + 外壳
 | **`gh repo create` 删不掉仓库** | 默认 scope 只有 `repo`/`workflow`/`gist`/`read:org`，删除返回 403 | 误建的仓库要么网页手动删，要么 `gh auth refresh -s delete_repo` |
 | **右键「检查」会让 CDP 工具接错目标** | 页面里右键 →「检查」开出一个 `devtools://` 的 page 目标；`cdp-attach.mjs` / `cdp-shot.mjs` 取「第一个 page」，于是把工具接到 DevTools 自己身上——报的错完全指不到原因（表达式语法明明是对的） | 两个脚本都改成**优先挑非 `devtools://` 的页面** |
 | **WebView2 默认弹浏览器的右键菜单** | 桌面应用里冒出「返回 / 刷新 / 另存为 / 打印 / 检查」，刷新会丢未保存的设置 | `src/contextMenu.ts` 在捕获阶段压掉默认菜单，但**输入框与选中文字放行**（粘贴/复制要用）——DESIGN §9.0 |
+| **id 只取毫秒时间戳会撞** | `save()`/`add_task()` 都曾用 `now_ms()` 直接当 id：同一毫秒内连续两次就撞。**后果不是重复而是覆盖**——后一份 cookie 文件顶掉前一份、后一条任务顶掉前一条（粘贴多行链接最容易中招）。CI 上 `keeps_multiple_profiles` 因此偶发失败 | 统一走 `state::unique_id(prefix)`（毫秒 + 进程内自增序号）；补了「同一毫秒连存 50 份」和「连续取 2000 个 id」两条确定性回归 |
 | **`Out-File -Encoding utf8` 会写 BOM** | 拿去当 JSON 请求体，GitHub 回 `Problems parsing JSON` | 用 `gh api -f key=value` 构造，或 `[Text.Encoding]::UTF8.GetBytes()` 传字节 |
 | **归档文件带 BOM 时首行静默失效** | yt-dlp 用 `encoding='utf-8'` 读归档，**不认 BOM**：首行比对不上 → 该视频重新下载；**后面几行正常**，所以看着像归档在工作。实测 `generic clip` 命中跳过，`\ufeffgeneric clip` 输出 `clip`（没命中） | `remove_from_archive` 读时 `strip_prefix('\u{feff}')`、写回不写 BOM（DESIGN §12.1）；`strip_archive_ids` 有单测钉住 |
 | **`-S` 做编码偏好会连分辨率一起丢掉** | `-S` **整体替换**默认排序，不是追加；`-S acodec:aac` + `-f bv*+ba/b` 实测选中 360p 的 `18`（本该 1080p）——用户只想换音频编码，画质静默塌掉 | 改用 `-f` 过滤器链（DESIGN §3.3），`preset_expression_with` 有单测，生成结果逐条对 yt-dlp 实测过 |
