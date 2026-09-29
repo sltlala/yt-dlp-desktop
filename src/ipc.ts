@@ -19,6 +19,7 @@ import type {
   JsRuntimeInfo,
   Settings,
   Task,
+  TempDirInUse,
 } from './types'
 
 /** 是否运行在 Tauri 容器里。 */
@@ -140,6 +141,11 @@ const tauriBackend = {
   formatPresets: () => invoke<FormatPreset[]>('format_presets'),
   /** 数据目录（设置/历史/cookies 所在处）+ 是否便携模式。 */
   dataDir: () => invoke<DataDirInfo>('data_dir'),
+  /**
+   * 临时目录现在能不能改：有任务还留着 `.part` 碎片时不能——
+   * 换了根那些碎片就找不到了，断点续传静默失效。
+   */
+  tempDirInUse: () => invoke<TempDirInUse>('temp_dir_in_use'),
   /**
    * 把「编辑中的设置」翻译成实际会用的 `-f` 表达式。
    *
@@ -632,6 +638,10 @@ class MockBackend {
     return ''
   }
 
+  async tempDirInUse(): Promise<TempDirInUse> {
+    return { inUse: false, count: 0, taskIds: [] }
+  }
+
   async dataDir(): Promise<DataDirInfo> {
     // mock 里没有真实目录，给一个看得懂的位置即可
     return {
@@ -736,6 +746,7 @@ export const api = isTauri()
       codecChoices: () => mock().codecChoices(),
       formatPresets: () => mock().formatPresets(),
       dataDir: () => mock().dataDir(),
+      tempDirInUse: () => mock().tempDirInUse(),
       previewFormatExpression: (s: Settings) => mock().previewFormatExpression(s),
       testProxy: () => mock().testProxy(),
       checkYtdlpUpdate: () => mock().checkYtdlpUpdate(),

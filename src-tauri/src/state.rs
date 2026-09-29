@@ -89,6 +89,17 @@ pub struct Task {
     /// 为真时界面应提示「进度可能不精确」。
     #[serde(default)]
     pub used_aria2c: bool,
+    /// 这个任务**已经因为 Cloudflare 拦截自动开过指纹模拟**。
+    ///
+    /// 两个作用：
+    /// 1. **防止无限重试**——重试过一次就不再重试，失败就是真失败；
+    /// 2. 让下载**继承探测的发现**——探测阶段撞上拦截时把这个置上，
+    ///    待会儿下载就不用再撞一次才发现要开模拟。
+    ///
+    /// 存在任务上而不是全局设置里：用户没要求开模拟，是这一个站点的这一次
+    /// 需要，不该顺手改掉他所有的下载。
+    #[serde(default)]
+    pub auto_impersonate: bool,
 }
 
 impl Task {
@@ -121,6 +132,7 @@ impl Task {
             playlist_items: None,
             queue_hint: None,
             used_aria2c: false,
+            auto_impersonate: false,
         }
     }
 }

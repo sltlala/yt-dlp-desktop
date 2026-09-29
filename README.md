@@ -70,6 +70,9 @@ cargo test -p ytdlp-core
 
 # ④ 打正式包（会走 dist/，不再依赖 dev server）
 npm run tauri:build
+
+# ⑤ 假 Cloudflare 服务器（验证反爬那套逻辑，不用去找真站点）
+python scripts/fake-cloudflare.py 8813   # 一律回 403 + cf-mitigated: challenge
 ```
 
 ### ⚠️ 不要直接双击 `target\debug\ytdlp-desktop.exe`
@@ -175,7 +178,8 @@ yt-dlp 有两种发行形态，**只有一种能直接放进 `externalBin`**：
 | **id 直接用毫秒时间戳会撞** | 同一毫秒内连续两次调用得到同一个 id，**覆盖**而不是重复：多行粘贴链接会丢任务，连续导入 cookies.txt 会丢 profile | 用 `state::unique_id()`（毫秒 + 进程内自增序号）；有「同一毫秒连存 50 份」的回归测试 |
 | **同步的 `#[tauri::command]` 会冻住整个窗口** | 它跑在主线程（Windows 消息循环）上，稍慢就是整窗无响应——标题栏都点不动。`aria2c_info` 要起进程，就是靠这个把「进设置再返回」弄卡的 | 凡做 IO（文件/进程/网络/剪贴板）的命令一律 `#[tauri::command(async)]`（DESIGN §4.4） |
 | **CDP 的合成点击测不出整窗卡死** | 它直接投给渲染进程、绕过宿主消息循环，主线程堵死时合成点击仍然 2ms 返回 | 用 `SendMessageTimeout(..., SMTO_ABORTIFHUNG)` 探宿主是否还在处理消息 |
-| **Cloudflare 403 要开 `generic:impersonate`** | 报错原文是命令行参数，界面用户够不着。**随包的 yt-dlp 已经带了 `curl_cffi`**（`--list-impersonate-targets` 有 17 个目标），所以只差把参数传进去 | 设置页「网络与账号 → 绕过 Cloudflare 拦截」，对应 `--extractor-args generic:impersonate`；**默认关**（yt-dlp 自己也不默认开，强开拖慢速度、降低稳定性）——DESIGN §7.6 |
+| **Cloudflare 403 要开 `generic:impersonate`** | 报错原文是命令行参数，界面用户够不着。**随包的 yt-dlp 已经带了 `curl_cffi`**（`--list-impersonate-targets` 有 17 个目标），所以只差把参数传进去 | 撞上拦截时**自动带指纹重试一次**（任务级旗标，只影响这一个任务）；设置页「网络与账号 → 绕过 Cloudflare 拦截」也能手动常开——DESIGN §7.6 |
+| **改 `tempDir` 会让续传静默失效** | 新目录里找不到旧 `.part`，yt-dlp 从头下，旧碎片永久残留（清理只扫当前根） | 还有 `.part` 时**禁用**该字段（按磁盘内容判，不按任务状态）；后端绕过时记 WARN——DESIGN §5.1 |
 | **归档文件有 BOM 时首行静默失效** | yt-dlp 用 `encoding='utf-8'` 读归档，**不认 BOM**；首行比对失败 → 该视频被重新下载。后面几行正常，所以很难发现 | 宿主读写归档都去 BOM、写回不写 BOM（DESIGN §12.1）；手工修归档别用 `Out-File -Encoding utf8` |
 | **Windows PowerShell 5.1 的 `Get-Content -Raw` 按 ANSI 读 UTF-8** | 读改写一次就把整个文件的中文变成乱码，且**不可逆** | 改文件一律用编辑工具；确要用脚本时显式 `[System.IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` |
 | **`Out-File -Encoding utf8` 在 5.1 里写 BOM** | 不只是编码问题：把 JSON 发给 GitHub API 会 `Problems parsing JSON`，给 yt-dlp 的归档会废掉首行 | 生成给机器读的文件用 `[System.IO.File]::WriteAllText($p, $s, [Text.UTF8Encoding]::new($false))` |

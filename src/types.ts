@@ -112,6 +112,13 @@ export interface Task {
   sizeEstimate: number | null
   /** **实际**成品大小（字节），下载结束后从磁盘读。 */
   sizeActual: number | null
+  /**
+   * 这个任务已经因为 Cloudflare 拦截图省着开过指纹模拟。
+   *
+   * 存在任务上而不是全局设置里：用户没要求开模拟，是这一个站点这一次需要。
+   * 同时保证自动重试**只发生一次**。
+   */
+  autoImpersonate?: boolean
   /** `-f` 表达式（当前生效的那个）。**存表达式而非 format_id**（DESIGN §3）。 */
   formatExpression: string
   /**
@@ -262,6 +269,14 @@ export interface FormatPreset {
   label: string
   note: string
   expr: string
+}
+
+/** 日志/数据目录信息见上；这是「临时目录现在能不能改」。 */
+export interface TempDirInUse {
+  inUse: boolean
+  /** 临时目录里还有可续传文件的任务数。 */
+  count: number
+  taskIds: string[]
 }
 
 /**

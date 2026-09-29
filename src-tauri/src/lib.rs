@@ -285,6 +285,37 @@ fn save_settings(state: State<AppState>, settings: Value) -> Result<(), String> 
     // 这里也保证了 `normalize_settings` 里清掉的废弃键不会又被写回去。
     let settings = normalize_settings(settings);
 
+    // ⚠️ 改 `tempDir` 会让**已经存在的 .part 找不到**：新目录里没有它们，
+    // yt-dlp 会从头下，旧碎片永远留在旧目录里（那种目录只在启动时按**当前**
+    // tempRoot 清理，换了根就再也扫不到）。
+    //
+    // 界面已经把输入框禁掉了，这里再加一道：真发生了至少要在日志里看得见，
+    // 否则「为什么断点续传没了」永远查不出来。
+    {
+        let old = state
+            .settings
+            .lock()
+            .map(|s| s.get("tempDir").and_then(|v| v.as_str()).unwrap_or("").to_string())
+            .unwrap_or_default();
+        let new = settings
+            .get("tempDir")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if old != new {
+            let busy = temp_dir_in_use(state.clone());
+            if busy.get("inUse").and_then(|v| v.as_bool()).unwrap_or(false) {
+                logfile::warn(format!(
+                    "tempDir 从「{old}」改成「{new}」，但有 {} 个任务的临时目录里还有可续传文件——\
+                     这些任务的断点续传会失效",
+                    busy.get("count").and_then(|v| v.as_u64()).unwrap_or(0)
+                ));
+            } else {
+                logfile::info(format!("tempDir 改为「{new}」"));
+            }
+        }
+    }
+
     if let Ok(mut s) = state.settings.lock() {
         *s = settings.clone();
     }
@@ -881,6 +912,43 @@ fn read_clipboard() -> Result<String, String> {
     clipboard::read_text()
 }
 
+/// 现在改 `tempDir` 会不会让续传失效？
+///
+/// ## 判据是**磁盘上有没有可续传的文件**，不是任务状态
+///
+/// 任务状态只能说明「流程没走完」；真正会丢的是 temp 目录里的 `.part` 碎片。
+/// 按状态判会把一堆早就下完、目录里只剩 `filepath.txt` 的任务也算进来，
+/// 于是临时目录被永久锁死——那种「明明是空的却不让改」最招人烦。
+///
+/// `filepath.txt` 是宿主自己写的完成标记，不算可续传内容。
+#[tauri::command(async)]
+fn temp_dir_in_use(state: State<AppState>) -> Value {
+    let settings = state
+        .settings
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or(Value::Null);
+    let root = paths::temp_root(&settings);
+
+    let mut busy: Vec<String> = Vec::new();
+    for t in state.snapshot() {
+        let dir = paths::task_temp_dir_in(&root, &t.id);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let has_resume = entries.flatten().any(|e| e.file_name() != "filepath.txt");
+        if has_resume {
+            busy.push(t.id);
+        }
+    }
+
+    json!({
+        "inUse": !busy.is_empty(),
+        "count": busy.len(),
+        "taskIds": busy,
+    })
+}
+
 /// 当前数据目录（设置、历史、cookie 都在这儿）+ 是否便携模式。
 ///
 /// 用户最常问的就是「我的历史存哪了」，而 `%APPDATA%` 在资源管理器里
@@ -1070,6 +1138,7 @@ pub fn run() {
             detect_js_runtimes,
             codec_choices,
             data_dir,
+            temp_dir_in_use,
             format_presets,
             preview_format_expression,
             read_clipboard,

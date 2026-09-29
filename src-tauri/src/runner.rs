@@ -198,12 +198,17 @@ fn prepare_aria2c(app: &AppHandle, task_id: &str, spec: &mut DownloadSpec) -> Op
 
 /// 运行一个下载任务。返回最终状态字符串。
 pub async fn run_download(app: AppHandle, task_id: String) {
-    let (url, playlist_items, format_override) = {
+    let (url, playlist_items, format_override, auto_impersonate) = {
         let state = app.state::<AppState>();
         let found = state.tasks.lock().ok().and_then(|t| {
-            t.iter()
-                .find(|x| x.id == task_id)
-                .map(|x| (x.url.clone(), x.playlist_items.clone(), x.format_override.clone()))
+            t.iter().find(|x| x.id == task_id).map(|x| {
+                (
+                    x.url.clone(),
+                    x.playlist_items.clone(),
+                    x.format_override.clone(),
+                    x.auto_impersonate,
+                )
+            })
         });
         match found {
             Some(v) => v,
@@ -218,6 +223,9 @@ pub async fn run_download(app: AppHandle, task_id: String) {
         // 播放列表选集与格式覆盖都是**任务级**的，不在设置里。
         spec.playlist_items = playlist_items;
         spec.format_override = format_override;
+        // 探测阶段如果已经因为 Cloudflare 开过模拟，这里直接沿用——
+        // 否则要再撞一次 403 才发现，白跑一轮。
+        spec.impersonate = spec.impersonate || auto_impersonate;
         spec
     };
     let Some(exe) = paths::resolve_ytdlp() else {
@@ -357,6 +365,7 @@ pub async fn run_download(app: AppHandle, task_id: String) {
     });
 
     // 终态记一行：出问题时，日志里这一行往往就是唯一能说明「当时怎么了」的线索。
+    let mut blind_retry = false;
     if let Ok(tasks) = app.state::<AppState>().tasks.lock() {
         if let Some(t) = tasks.iter().find(|x| x.id == task_id) {
             let detail = t
@@ -370,7 +379,35 @@ pub async fn run_download(app: AppHandle, task_id: String) {
             } else {
                 crate::logfile::info(line);
             }
+
+            // 撞上 Cloudflare 拦截、而且**还没试过**指纹模拟 -> 自动重试一次。
+            //
+            // 重试走的是重新入队（`enqueue_download`），不是在这里循环：
+            // 那条路会把 temp 目录、filepath.txt 这些该重置的都重置好。
+            // `auto_impersonate` 这个旗标保证**只重试一次**——再失败就是真失败。
+            blind_retry = should_retry_with_impersonate(&t.state, t.auto_impersonate, t.error.as_deref());
         }
+    }
+
+    if blind_retry {
+        crate::logfile::info(format!(
+            "[{task_id}] 下载遇到 Cloudflare 拦截，自动开启指纹模拟重试一次"
+        ));
+        update(&app, &task_id, |t| {
+            t.auto_impersonate = true;
+            t.state = "pending".into();
+            t.error = None;
+            t.finished_at = None;
+            t.queue_hint = Some("遇到 Cloudflare 拦截，已开启指纹模拟重试".into());
+        });
+        push_warning(
+            &app,
+            &task_id,
+            "站点有 Cloudflare 反爬拦截，已自动开启浏览器指纹模拟重试（只对这个任务有效）".to_string(),
+        );
+        let host = ytdlp_core::host_of(&url);
+        app.state::<crate::scheduler::Scheduler>()
+            .enqueue_download(task_id.to_string(), host);
     }
 }
 
@@ -657,8 +694,42 @@ pub fn impersonate_of(settings: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// 从设置里取 JS 运行时配置。
+/// 一份「强制打开指纹模拟」的设置副本。
 ///
+/// 撞上 Cloudflare 时用它重试一次——**不改用户自己的设置**，
+/// 只影响这一次调用。
+fn settings_with_impersonate(settings: &Value) -> Value {
+    let mut v = settings.clone();
+    if let Some(o) = v.as_object_mut() {
+        o.insert("impersonate".into(), Value::Bool(true));
+    }
+    v
+}
+
+/// 这段输出是不是 Cloudflare 反爬拦截。
+///
+/// 认的是 yt-dlp 自己那句话（`generic.py` 里写死的），
+/// 分类后的中文提示里也原样带着它，所以两种来源都能认出。
+fn is_cloudflare_challenge(text: &str) -> bool {
+    text.contains("Cloudflare anti-bot challenge")
+}
+
+/// 这次下载失败要不要**自动**带着指纹模拟重试一次。
+///
+/// 三个条件缺一不可：
+/// - 确实失败了（不是 canceled，也不是正常跳过）；
+/// - **还没试过**自动模拟——`already` 保证只重试一次，否则会死循环；
+/// - 失败原因就是 Cloudflare 拦截。
+///
+/// 抽成纯函数是因为这个判断错了的代价很大：漏判 = 用户继续看到那个
+/// 看不懂的 403；误判 = 每个失败都白跑一遍。
+fn should_retry_with_impersonate(state: &str, already: bool, error: Option<&str>) -> bool {
+    state == "failed"
+        && !already
+        && error.map(is_cloudflare_challenge).unwrap_or(false)
+}
+
+/// 从设置里取 JS 运行时配置。///
 /// 设置为空时**自动检测**：用户不该为了一个「不给就下不了 YouTube」的必需参数
 /// 去手工配置。见 `JsRuntimeOptions` 的说明。
 pub fn js_of(settings: &Value) -> JsRuntimeOptions {
@@ -787,6 +858,37 @@ pub async fn run_probe(app: AppHandle, task_id: String) {
     let info = match probe_once(&exe, &task_id, &url, &settings, Some(&expression)).await {
         Ok(i) => i,
         Err(first) => {
+            // ① 撞上 Cloudflare 拦截：**带着指纹模拟原地重试一次**。
+            //    放在「退回不带 -f」之前——那种退让解决不了 403，
+            //    只会把同一个失败再走一遍。
+            if first.cloudflare && !impersonate_of(&settings) {
+                crate::logfile::info(format!(
+                    "[{task_id}] 探测遇到 Cloudflare 拦截，自动开启指纹模拟重试"
+                ));
+                let forced = settings_with_impersonate(&settings);
+                match probe_once(&exe, &task_id, &url, &forced, Some(&expression)).await {
+                    Ok(i) => {
+                        // 记住「这个站点要模拟」，下载阶段直接沿用，
+                        // 不用再撞一次才发现。**不写进用户设置**。
+                        update(&app, &task_id, |t| t.auto_impersonate = true);
+                        push_warning(
+                            &app,
+                            &task_id,
+                            "站点有 Cloudflare 反爬拦截，已自动开启浏览器指纹模拟（只对这个任务有效）"
+                                .to_string(),
+                        );
+                        apply_info(&app, &task_id, &url, i);
+                        return;
+                    }
+                    Err(_) => {
+                        crate::logfile::warn(format!(
+                            "[{task_id}] 开启指纹模拟后仍被 Cloudflare 拦截"
+                        ));
+                        // 模拟也没用，继续走原来的退让逻辑
+                    }
+                }
+            }
+
             // ⚠️ 表达式不可满足时 yt-dlp **整个探测都会失败**（exit=1，连 JSON 都不给）。
             // 预估大小可以让步，元数据与格式表不能让——退回不带 `-f` 再探一次。
             match probe_once(&exe, &task_id, &url, &settings, None).await {
@@ -822,6 +924,8 @@ struct ProbeFailure {
     message: String,
     /// 失败原因是「所选格式不可用」——用于区分「用户的表达式有问题」和偶发故障。
     format_unavailable: bool,
+    /// 失败原因是 Cloudflare 反爬拦截——这种情况要带着指纹模拟重试。
+    cloudflare: bool,
 }
 
 /// 跑一次探测。`format` 为 `Some` 时会带上 `-f`，从而拿到预估大小。
@@ -858,6 +962,7 @@ async fn probe_once(
             ytdlp_core::parse_info_json(&json).map_err(|e| ProbeFailure {
                 message: format!("探测结果解析失败：{e}"),
                 format_unavailable: false,
+                cloudflare: false,
             })
         }
         Ok(o) => {
@@ -865,11 +970,13 @@ async fn probe_once(
             Err(ProbeFailure {
                 message: classify_error(&raw, o.status.code()),
                 format_unavailable: raw.contains("Requested format is not available"),
+                cloudflare: is_cloudflare_challenge(&raw),
             })
         }
         Err(e) => Err(ProbeFailure {
             message: format!("无法启动 yt-dlp：{e}"),
             format_unavailable: false,
+            cloudflare: false,
         }),
     }
 }
@@ -1038,6 +1145,59 @@ mod tests {
     use serde_json::json;
 
     // ─────────── 日志里的命令行渲染 ───────────
+
+    /// 认 Cloudflare 拦截靠的是 yt-dlp 自己那句话——**分类前后的文本都要认**：
+    /// 探测走 `classify_error`（中文多行），下载走到的是原始 ERROR 行。
+    #[test]
+    fn cloudflare_challenge_is_recognized_in_both_forms() {
+        // 原始形式
+        assert!(is_cloudflare_challenge(
+            "ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge; \
+             try again with --extractor-args \"generic:impersonate\""
+        ));
+        // 分类后的中文提示里原样带着那句话
+        let classified = classify_error(
+            "ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge",
+            Some(1),
+        );
+        assert!(classified.contains("Cloudflare 反爬拦截"), "实际: {classified}");
+        assert!(is_cloudflare_challenge(&classified));
+        // 别的 403 不能误判
+        assert!(!is_cloudflare_challenge("ERROR: HTTP Error 403: Forbidden"));
+        assert!(!is_cloudflare_challenge("ERROR: Unable to download webpage"));
+    }
+
+    /// 自动重试的三个条件，逐个钉住。
+    #[test]
+    fn auto_retry_requires_all_three_conditions() {
+        let cf = "ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge";
+        // 正常触发
+        assert!(should_retry_with_impersonate("failed", false, Some(cf)));
+        // 已经试过一次 —— **不能再试**，否则死循环
+        assert!(!should_retry_with_impersonate("failed", true, Some(cf)));
+        // 不是失败（跳过/取消/完成）就不该重试
+        assert!(!should_retry_with_impersonate("skipped", false, Some(cf)));
+        assert!(!should_retry_with_impersonate("canceled", false, Some(cf)));
+        assert!(!should_retry_with_impersonate("completed", false, Some(cf)));
+        // 别的失败原因不重试（每个失败都白跑一遍才是最糟的）
+        assert!(!should_retry_with_impersonate("failed", false, Some("HTTP Error 403: Forbidden")));
+        assert!(!should_retry_with_impersonate("failed", false, Some("网络不可达")));
+        assert!(!should_retry_with_impersonate("failed", false, None));
+    }
+
+    /// 强制模拟只改这一个键，用户其他设置原样不动。
+    #[test]
+    fn forced_impersonate_only_flips_that_key() {
+        let s = json!({ "impersonate": false, "proxyMode": "manual", "proxyHost": "127.0.0.1" });
+        let forced = settings_with_impersonate(&s);
+        assert_eq!(forced["impersonate"], json!(true));
+        assert_eq!(forced["proxyMode"], json!("manual"));
+        assert_eq!(forced["proxyHost"], json!("127.0.0.1"));
+        // 原对象不能被改（它是从 state 里 clone 出来的，但别依赖这点）
+        assert_eq!(s["impersonate"], json!(false));
+        // 原本就是 true 也不受影响
+        assert_eq!(settings_with_impersonate(&json!({ "impersonate": true }))["impersonate"], json!(true));
+    }
 
     /// ⚠️ 最重要的一条：**代理密码不能进日志**。
     /// 日志文件是用户要发出来给人定位问题的，里面出现密码就是事故。

@@ -9,6 +9,7 @@ import type {
   DataDirInfo,
   JsRuntimeInfo,
   Settings,
+  TempDirInUse,
 } from '../types'
 import { deepClone, ellipsizePath, fmtTime } from '../utils'
 
@@ -118,6 +119,7 @@ onMounted(() => {
   void loadAria2c()
   void loadCodecChoices()
   void loadDataDir()
+  void loadTempInUse()
   // 选「跟随系统代理」时要把系统那份读出来展示，进页面就先取一次
   if (s.proxyMode === 'system') void loadSystemProxy()
 })
@@ -128,6 +130,18 @@ onMounted(() => {
  * 所以把路径直接摆出来，并说明怎么切成便携模式。
  */
 const dataDir = ref<DataDirInfo | null>(null)
+
+/** 临时目录现在能不能改（还有 .part 碎片时不能）。 */
+const tempInUse = ref<TempDirInUse>({ inUse: false, count: 0, taskIds: [] })
+
+async function loadTempInUse() {
+  try {
+    tempInUse.value = await api.tempDirInUse()
+  } catch {
+    // 取不到就当「没占用」：宁可让用户改，也不要因为一个探测失败把人锁死
+    tempInUse.value = { inUse: false, count: 0, taskIds: [] }
+  }
+}
 
 async function loadDataDir() {
   try {
@@ -708,8 +722,18 @@ const templateWarning = computed(() => {
           <div class="field">
             <span>临时目录<em>断点续传依赖它稳定不变</em></span>
             <div class="path-row">
-              <input v-model="s.tempDir" class="mono" spellcheck="false" />
-              <button class="btn sm" title="选择文件夹" @click="browseFolder('tempDir')">
+              <input
+                v-model="s.tempDir"
+                class="mono"
+                spellcheck="false"
+                :disabled="tempInUse.inUse"
+              />
+              <button
+                class="btn sm"
+                title="选择文件夹"
+                :disabled="tempInUse.inUse"
+                @click="browseFolder('tempDir')"
+              >
                 浏览…
               </button>
               <button
@@ -721,7 +745,16 @@ const templateWarning = computed(() => {
                 打开
               </button>
             </div>
-            <em v-if="dirWarning('tempDir')" class="path-warn">{{ dirWarning('tempDir') }}</em>
+            <!--
+              有 .part 碎片时**锁住**这个字段，而不是只弹个警告：
+              改了以后那些碎片在新目录里根本找不到，续传会静默失效、
+              旧目录还会永久残留（清理只扫当前 tempRoot）。
+            -->
+            <em v-if="tempInUse.inUse" class="path-warn">
+              有 {{ tempInUse.count }} 个任务的临时目录里还留着未完成的分片，现在改这里会让它们的断点续传失效。
+              先让这些任务下载完，或在任务详情里「移除记录」（会一并清理临时文件）后再改。
+            </em>
+            <em v-else-if="dirWarning('tempDir')" class="path-warn">{{ dirWarning('tempDir') }}</em>
           </div>
           <div class="field">
             <span>数据目录<em>设置、历史记录、cookies 都在这里{{ dataDir?.portable ? '（便携模式）' : '' }}</em></span>

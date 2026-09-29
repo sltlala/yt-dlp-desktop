@@ -367,7 +367,6 @@ SendMessageTimeout(hwnd, 0x0000, 0, 0, 0x0002, timeoutMs, out _)
 ## 5. 持久化与崩溃恢复
 
 ### 5.1 temp 目录必须由 task_id 稳定推导 ⚠️
-
 HANDOFF §3.6 要求「取消后保留 `.part` 才能续传」，但未定义 `.part` 位置。
 若 `--paths "temp:<dir>"` 的 `dir` 每次随机生成（`%TEMP%/ytdlp-<random>`），
 则恢复时 yt-dlp 在**新目录**中找不到旧 `.part`，**续传静默失效**，且旧碎片永久残留。
@@ -385,6 +384,17 @@ temp 根默认是 `<AppData>/<App>/tmp/`，但**设置里的「临时目录」�
 `remove_record` / `remove_many` / 启动清理都会**同时扫默认根和配置根**，
 所以改过之后旧根里不会留下垃圾。
 
+**这个洞已经堵上**：设置页的「临时目录」在还有 `.part` 碎片时**直接禁用**。
+
+判据是**磁盘上有没有可续传的文件**（`temp_dir_in_use` 命令），**不是任务状态**：
+按状态判会把一堆早就下完、目录里只剩宿主自己写的 `filepath.txt` 的任务也算进来，
+于是临时目录被永久锁死——那种「明明是空的却不让改」最招人烦。
+实测三种情况：空目录 → 不禁用；有 `.part` → 禁用并说明有几个任务；
+只剩 `filepath.txt` → 不禁用。
+
+后端再补一道：真被绕过（比如直接改 config.json）时，至少在日志里记一条 WARN，
+否则「为什么断点续传没了」永远查不出来。
+
 ### 5.2 进度绝不直接写库
 
 `--progress-delta 0.2`（HANDOFF §3.2 ✅）= 每任务每 0.2s 一条事件；10 任务即 50 次/秒写入。
@@ -394,13 +404,10 @@ temp 根默认是 `<AppData>/<App>/tmp/`，但**设置里的「临时目录」�
 - 每 5–10s flush 一次快照（用于崩溃后显示「上次到 45%」）
 - SQLite 开 **WAL** + `synchronous=NORMAL`
 
-> **当前实现状态**：用的是 `%APPDATA%\ytdlp-desktop\tasks.json` 而非 SQLite，
-> 配一个「dirty 标志 + 每 3 秒节流落盘」的后台任务，写入走 `.tmp` → rename 原子替换。
->
-> 之所以先不上 SQLite：现阶段任务量在几十到几百条，全量 JSON 重写的成本可接受，
-> 而 SQLite 会引入 `rusqlite` 依赖与迁移管理。**上面那三条纪律已经遵守**
-> （进度不落库、只标 dirty、节流写盘），所以后续换 SQLite 时数据层可整体替换，
-> 不会牵动状态机。
+> **当前实现**：SQLite（`rusqlite` 的 bundled 特性），表结构就一张
+> `tasks(id, state, updated_at, data)`，整个 Task 序列化成 JSON 放在 `data` 列里。
+> `state` / `updated_at` 单独成列只是为了建索引（按状态筛、按时间倒序）。
+> 上面那三条纪律都遵守了：进度不落库、只标 dirty、节流写盘。
 
 ### 5.3 崩溃恢复
 
@@ -752,6 +759,35 @@ except ExtractorError as e:
 
 **默认关**，与 yt-dlp 自己的取法一致（见上面那段 `['false']` 与 issue #11335）。
 单测钉住三件事：默认不传、打开后探测与下载都带、永远不退化成全局 `--impersonate`。
+
+#### 撞上拦截时**自动重试一次**（不用用户去设置里勾）
+
+报这个错时用户根本不知道该开哪个开关，所以除了设置页那个入口，还做了一层
+自动兜底：**探测与下载撞上 Cloudflare 时，自动带上指纹模拟重试一次**。
+
+| 阶段 | 做法 |
+|---|---|
+| 探测 | 原地重试一次——把设置副本里的 `impersonate` 置真，**不改用户设置** |
+| 下载 | 置任务级旗标 `Task.auto_impersonate` 后**重新入队**（走 `enqueue_download`，让 temp/`filepath.txt` 该重置的都重置好） |
+
+`auto_impersonate` 存在**任务**上而不是全局设置里，两个原因：
+
+1. **防止死循环**——只重试一次，再失败就是真失败（`should_retry_with_impersonate`）；
+2. **让下载继承探测的发现**——探测阶段撞上拦截就把旗标置上，待会儿下载直接
+   带着模拟跑，不用再撞一次 403 才发现。
+
+用户没要求开模拟，是**这一个站点这一次**需要，不该顺手改掉他所有的下载。
+
+> 验证方式：`scripts/fake-cloudflare.py` 起一个一律返回
+> `403 + cf-mitigated: challenge` 的假站（真站点不好找，也不该拿别人站点压测）。
+> 实测日志：
+> 第一次探测无 `--extractor-args` → 记一行「自动开启指纹模拟重试」→
+> 第二次命令带上 `--extractor-args generic:impersonate` →
+> 假站依然 403，于是记「开启指纹模拟后仍被 Cloudflare 拦截」并走原来的退让逻辑。
+
+> ⚠️ **下载阶段那条路没有端到端跑通**（只跑通了探测那条）。原因是让探测成功、
+> 下载时才撞上拦截需要一个「按请求次数变脸」的服务器，不值得为测试造这个。
+> 判断逻辑抽成了纯函数 `should_retry_with_impersonate` 并有单测覆盖三种条件。
 
 > ⚠️ 未验证的部分：手里没有 Cloudflare 站点可测，所以**只验证到「参数拼对了、
 > yt-dlp 接受这个写法」**（本地实测不报 invalid extractor argument），
