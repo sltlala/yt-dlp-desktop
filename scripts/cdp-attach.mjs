@@ -32,7 +32,11 @@ for (let i = 0; i < 40; i++) {
   await sleep(250)
 }
 
-const page = targets?.find((t) => t.type === 'page')
+// ⚠️ 必须优先挑**应用页面**：在页面里右键 →「检查」会开出一个 `devtools://`
+// 的 page 目标，直接取第一个的话会把工具接到 DevTools 自己身上（报的错还完全
+// 指不到原因——表达式语法明明是对的）。
+const pages = targets?.filter((t) => t.type === 'page') ?? []
+const page = pages.find((t) => !t.url.startsWith('devtools://')) ?? pages[0]
 if (!page) {
   console.error(`端口 ${PORT} 上未找到调试目标`)
   process.exit(1)

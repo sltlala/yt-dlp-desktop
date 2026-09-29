@@ -29,7 +29,10 @@ for (let i = 0; i < 40; i++) {
   try {
     const r = await fetch(`http://127.0.0.1:${PORT}/json/list`)
     const targets = await r.json()
-    page = targets.find((t) => t.type === 'page')
+    // ⚠️ 跳过 `devtools://`：页面里右键 →「检查」会开出一个 DevTools 的 page 目标，
+    // 否则截出来的会是 DevTools 界面本身。
+    const pages = targets.filter((t) => t.type === 'page')
+    page = pages.find((t) => !t.url.startsWith('devtools://')) ?? pages[0] ?? null
     if (page) break
   } catch {
     /* 还没起来 */

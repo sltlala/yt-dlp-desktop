@@ -645,6 +645,23 @@ yt-dlp 更新流程：`GET api.github.com/repos/yt-dlp/yt-dlp/releases/latest` �
 - 任务数可能上百 → 必须**虚拟滚动**，否则 DOM 爆炸
 - **「正在合并」必须在行内有明确视觉**（理由见 §5.4）
 
+### 9.0 右键菜单要压掉，但不能一刀切
+
+Tauri 的 WebView2 默认弹出 **Edge 的浏览器菜单**（返回 / 刷新 / 另存为 / 打印 /
+更多工具 / 检查）。在一个桌面应用里这既不像原生，也有实际危害：
+「刷新」会把没保存的设置改动丢掉，「检查」会在界面上开一个 DevTools。
+
+但**不能全局 `preventDefault`**：输入框里右键要能**粘贴**（设置页、添加链接都要用），
+选中文字后右键要能**复制**（复制链接、文件名）。
+
+所以规则是「既不是可编辑字段、也没有选中文字」时才压掉（`src/contextMenu.ts`），
+在 `mount` 之前挂到 `document` 的**捕获阶段**（免得被某个组件的
+`stopPropagation` 挡掉）。
+
+> 副作用：DevTools 的入口没了。开发期本来也不靠它——工具走
+> `--remote-debugging-port` + `scripts/cdp-attach.mjs`（见 RESUME）。
+> 发布版 Tauri 默认也不启用 devtools。
+
 第二个交互难点（与格式选择并列）：**播放列表**。
 探测时用 `--flat-playlist --dump-single-json` 先拿扁平条目列表（不解析每条，快得多），
 UI 让用户勾选，再对选中项生成任务。
