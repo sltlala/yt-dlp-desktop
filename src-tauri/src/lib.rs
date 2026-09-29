@@ -272,7 +272,7 @@ fn get_settings(state: State<AppState>) -> Value {
         .unwrap_or_else(|_| default_settings())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_settings(state: State<AppState>, settings: Value) -> Result<(), String> {
     // ⚠️ 归一化后再落内存和磁盘。`get_settings` 是归一化过的，如果保存路径
     // 不归一化，「读到的」和「存进去的」就会不一致：新增设置键时前端拿到的是
@@ -307,7 +307,7 @@ fn save_settings(state: State<AppState>, settings: Value) -> Result<(), String> 
 ///
 /// 只是**展示**：`跟随系统代理` 模式在每次探测/下载时会重新读，
 /// 免得用户改了系统代理还得回来点一下。
-#[tauri::command]
+#[tauri::command(async)]
 fn system_proxy() -> Value {
     let p = sysproxy::current();
     json!({
@@ -489,7 +489,7 @@ fn set_task_format(app: AppHandle, id: String, expression: String) {
 /// 移除任务记录，并清理该任务的临时目录。
 ///
 /// **不删除成品文件** —— 那是独立的「删除文件」动作（DESIGN §13）。
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_record(app: AppHandle, id: String) {
     runner::cancel_task(&app, &id);
     app.state::<Scheduler>().forget(&id);
@@ -501,7 +501,7 @@ fn remove_record(app: AppHandle, id: String) {
     let _ = app.emit("task://update", app.state::<AppState>().snapshot());
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_many(app: AppHandle, ids: Vec<String>) {
     let root = temp_root_of(&app.state::<AppState>());
     for id in &ids {
@@ -542,7 +542,7 @@ fn strip_archive_ids(content: &str, ids: &[String]) -> (String, usize) {
 ///
 /// ⚠️ 仅此一步**不足以**重新下载：成品文件仍在磁盘时 yt-dlp 会跳过并返回 exit=0
 /// （DESIGN §13.2）。
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_from_archive(state: State<AppState>, ids: Vec<String>) -> Result<usize, String> {
     let settings = state.settings.lock().map(|s| s.clone()).unwrap_or(Value::Null);
     let archive = settings
@@ -577,7 +577,7 @@ fn remove_from_archive(state: State<AppState>, ids: Vec<String>) -> Result<usize
 }
 
 /// 删除单条记录的成品文件。**独立动作，永不自动执行**（DESIGN §13.2）。
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_file(state: State<AppState>, id: String) -> Result<(), String> {
     let path = {
         let tasks = state.tasks.lock().map_err(|e| e.to_string())?;
@@ -600,13 +600,13 @@ fn delete_file(state: State<AppState>, id: String) -> Result<(), String> {
 }
 
 /// 用系统默认程序打开已下载的文件（行双击 / 详情里的「打开文件」）。
-#[tauri::command]
+#[tauri::command(async)]
 fn open_file(path: String) -> Result<(), String> {
     shell::open_file(&path)
 }
 
 /// 在资源管理器中选中该文件（而不是打开它）。
-#[tauri::command]
+#[tauri::command(async)]
 fn reveal_file(path: String) -> Result<(), String> {
     shell::reveal_file(&path)
 }
@@ -674,13 +674,13 @@ async fn probe_formats(
 // 多 profile 而不是单个输入框：用户必然有多套身份（B站账号 A / YouTube 账号 B）。
 // 列表接口**不返回 cookie 内容**，只返回元数据。
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_cookie_profiles() -> Vec<cookies::CookieProfile> {
     cookies::list()
 }
 
 /// 导入一份 cookies.txt。**先校验格式再落盘**，格式错误带行号返回。
-#[tauri::command]
+#[tauri::command(async)]
 fn import_cookie_profile(
     name: String,
     content: String,
@@ -689,20 +689,20 @@ fn import_cookie_profile(
     cookies::save(&name, &content, &origin)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_cookie_profile(id: String) -> Result<(), String> {
     cookies::remove(&id)
 }
 
 /// 导入前预览：读一份外部 cookies.txt 并校验，返回 cookie 条数。
-#[tauri::command]
+#[tauri::command(async)]
 fn inspect_cookie_file(path: String) -> Result<usize, String> {
     let content = std::fs::read_to_string(&path).map_err(|e| format!("读取失败：{e}"))?;
     ytdlp_core::validate_netscape(&content).map_err(|e| e.message())
 }
 
 /// 预检已导入的 profile 是否仍可用（文件可能被外部删掉或改坏）。
-#[tauri::command]
+#[tauri::command(async)]
 fn test_cookie_profile(id: String) -> Value {
     let p = cookies::check_profile(&id);
     json!({ "ok": p.is_ok(), "summary": p.summary() })
@@ -725,7 +725,7 @@ async fn test_cookie_browser(browser: String) -> Value {
 /// 界面上不再写死三个浏览器：本机可能装了别的，而且同一浏览器常有多个 profile
 /// （工作与个人各一份，登录态不同）。检测用的路径与 yt-dlp 一致，
 /// 保证「选得到的」就是「读得到的」。
-#[tauri::command]
+#[tauri::command(async)]
 fn list_browsers() -> Vec<cookies::BrowserChoice> {
     cookies::list_browsers()
 }
@@ -789,7 +789,7 @@ async fn test_proxy(state: State<'_, AppState>) -> Result<Value, String> {
 /// **不是可选优化**：实测同一份 yt-dlp、同一个链接、同样的 cookie 与代理，
 /// 只差 `--js-runtimes node` 就是「需要重载页面」与「成功」的区别。
 /// yt-dlp 不会自动启用已安装的运行时。
-#[tauri::command]
+#[tauri::command(async)]
 fn detect_js_runtimes() -> Value {
     let candidates: Vec<Value> = paths::detect_js_runtimes_detailed()
         .into_iter()
@@ -864,7 +864,7 @@ fn preview_format_expression(settings: Value) -> String {
 ///
 /// 前端做不了这件事：`navigator.clipboard.readText()` 在 WebView2 里会卡在
 /// 权限弹窗上，`execCommand('paste')` 恒为 false。详见 `clipboard` 模块。
-#[tauri::command]
+#[tauri::command(async)]
 fn read_clipboard() -> Result<String, String> {
     clipboard::read_text()
 }
@@ -873,7 +873,7 @@ fn read_clipboard() -> Result<String, String> {
 ///
 /// 用户需要知道**当前用的是哪一份**：随包的出厂副本、还是 PATH 上那份旧的。
 /// 两者行为可能不同（版本、连接数限制），出问题时这是第一个要看的信息。
-#[tauri::command]
+#[tauri::command(async)]
 fn aria2c_info() -> Value {
     let (path, version) = paths::aria2c_status();
     json!({

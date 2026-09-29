@@ -121,6 +121,8 @@ yt-dlp 有两种发行形态，**只有一种能直接放进 `externalBin`**：
 | **带 `-f` 的探测会因表达式不可满足而整体失败** | `--dump-single-json -f <不可满足>` 直接 exit=1、**连 JSON 都没有**，元数据与格式表全丢 | 带 `-f` 探一次，失败就**不带 `-f` 再探一次**（预估大小可以让步，格式表不能让）——DESIGN §15.2 |
 | **预估大小只能取自 `requested_downloads`** | 它是 yt-dlp 按当前 `-f` 真正选中的格式、且体积**已加好**；自己在宿主侧推算等于重写一遍选择器 | 探测时带 `-f`（实测 `formats` 仍完整）；合并选择的值落在 `filesize_approx`，单条才可能给 `filesize` |
 | **id 直接用毫秒时间戳会撞** | 同一毫秒内连续两次调用得到同一个 id，**覆盖**而不是重复：多行粘贴链接会丢任务，连续导入 cookies.txt 会丢 profile | 用 `state::unique_id()`（毫秒 + 进程内自增序号）；有「同一毫秒连存 50 份」的回归测试 |
+| **同步的 `#[tauri::command]` 会冻住整个窗口** | 它跑在主线程（Windows 消息循环）上，稍慢就是整窗无响应——标题栏都点不动。`aria2c_info` 要起进程，就是靠这个把「进设置再返回」弄卡的 | 凡做 IO（文件/进程/网络/剪贴板）的命令一律 `#[tauri::command(async)]`（DESIGN §4.4） |
+| **CDP 的合成点击测不出整窗卡死** | 它直接投给渲染进程、绕过宿主消息循环，主线程堵死时合成点击仍然 2ms 返回 | 用 `SendMessageTimeout(..., SMTO_ABORTIFHUNG)` 探宿主是否还在处理消息 |
 | **归档文件有 BOM 时首行静默失效** | yt-dlp 用 `encoding='utf-8'` 读归档，**不认 BOM**；首行比对失败 → 该视频被重新下载。后面几行正常，所以很难发现 | 宿主读写归档都去 BOM、写回不写 BOM（DESIGN §12.1）；手工修归档别用 `Out-File -Encoding utf8` |
 | **Windows PowerShell 5.1 的 `Get-Content -Raw` 按 ANSI 读 UTF-8** | 读改写一次就把整个文件的中文变成乱码，且**不可逆** | 改文件一律用编辑工具；确要用脚本时显式 `[System.IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` |
 | **`Out-File -Encoding utf8` 在 5.1 里写 BOM** | 不只是编码问题：把 JSON 发给 GitHub API 会 `Problems parsing JSON`，给 yt-dlp 的归档会废掉首行 | 生成给机器读的文件用 `[System.IO.File]::WriteAllText($p, $s, [Text.UTF8Encoding]::new($false))` |
