@@ -13,6 +13,7 @@ import type {
   BrowserChoice,
   CodecChoices,
   CookieProfile,
+  DataDirInfo,
   FormatOption,
   FormatPreset,
   JsRuntimeInfo,
@@ -137,6 +138,8 @@ const tauriBackend = {
    * 所以从选择器里点「1080p」不会把设置里的偏好丢掉。
    */
   formatPresets: () => invoke<FormatPreset[]>('format_presets'),
+  /** 数据目录（设置/历史/cookies 所在处）+ 是否便携模式。 */
+  dataDir: () => invoke<DataDirInfo>('data_dir'),
   /**
    * 把「编辑中的设置」翻译成实际会用的 `-f` 表达式。
    *
@@ -629,6 +632,11 @@ class MockBackend {
     return ''
   }
 
+  async dataDir(): Promise<DataDirInfo> {
+    // mock 里没有真实目录，给一个看得懂的位置即可
+    return { root: 'C:\\Users\\demo\\AppData\\Roaming\\ytdlp-desktop', portable: false, marker: 'portable.txt' }
+  }
+
   async detectJsRuntimes(): Promise<JsRuntimeInfo> {
     return {
       detected: ['node', 'bun'],
@@ -722,6 +730,7 @@ export const api = isTauri()
       readClipboard: () => mock().readClipboard(),
       codecChoices: () => mock().codecChoices(),
       formatPresets: () => mock().formatPresets(),
+      dataDir: () => mock().dataDir(),
       previewFormatExpression: (s: Settings) => mock().previewFormatExpression(s),
       testProxy: () => mock().testProxy(),
       checkYtdlpUpdate: () => mock().checkYtdlpUpdate(),

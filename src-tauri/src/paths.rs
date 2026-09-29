@@ -4,11 +4,65 @@
 //! 安装目录通常在 `Program Files`，实测非管理员进程写入会抛
 //! `UnauthorizedAccessException`，且安装器的「修复」功能可能把它还原。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use ytdlp_core::locate;
 
-/// `%APPDATA%\<identifier>`（Windows）/ `~/.config/<identifier>`（Unix）
+/// 便携模式的标记文件名。放在 **exe 同目录**下即启用。
+///
+/// 内容随便写（可以写一句说明），只判断文件在不在。
+pub const PORTABLE_MARKER: &str = "portable.txt";
+
+/// 便携模式下数据放在 exe 同目录的哪个子目录。
+///
+/// 不直接铺在 exe 旁边是为了**一眼分得清**：exe/侧车程序是「程序」，
+/// `data/` 里全是「你的东西」，整个文件夹拷走就是完整迁移。
+const PORTABLE_DATA_DIR: &str = "data";
+
+/// 便携模式的判定（纯函数，传入 exe 目录，便于单测）。
+///
+/// ## 为什么用标记文件，而不是「exe 旁边能写就自动用」
+///
+/// 自动判定会让**同一个 exe 在不同机器上把数据写到不同地方**：装在
+/// `Program Files` 时落到 `%APPDATA%`，解压到 U 盘时落到自己旁边。
+/// 用户完全预期不到「我的历史去哪了」——而这正是这个项目最想避免的失败方式。
+/// 一个显式的 `portable.txt` 则一眼能看出当前是不是便携模式。
+///
+/// 目录建不出来 / 写不进去（只读目录、U 盘写保护、`Program Files`）时
+/// 返回 `None` 退回 `%APPDATA%`——总比之后每一次写盘都报一个看不懂的错好。
+fn portable_root_in(exe_dir: &Path) -> Option<PathBuf> {
+    if !exe_dir.join(PORTABLE_MARKER).is_file() {
+        return None;
+    }
+    let data = exe_dir.join(PORTABLE_DATA_DIR);
+    std::fs::create_dir_all(&data).ok()?;
+    // 真写一个探针文件：`create_dir_all` 对**已存在但只读**的目录是成功的，
+    // 光靠它判断不出能不能写。
+    let probe = data.join(".writable-probe");
+    std::fs::write(&probe, b"1").ok()?;
+    let _ = std::fs::remove_file(&probe);
+    Some(data)
+}
+
+/// 便携模式的数据目录；未启用或不可写时为 `None`。
+///
+/// 结果缓存一次：exe 目录在一个进程里不会变，而这个函数被调用得非常频繁
+/// （每次拼 temp 路径都会走到）。缓存的是**便携判定**，不是 AppData 的解析——
+/// 后者要能被测试里的 `set_var("APPDATA")` 影响。
+fn portable_root() -> Option<PathBuf> {
+    static CACHE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| install_dir().and_then(|d| portable_root_in(&d)))
+        .clone()
+}
+
+/// `%APPDATA%\<identifier>`（Windows）/ `~/.config/<identifier>`（Unix）。
+///
+/// **exe 同目录下有 `portable.txt` 时改为便携模式**，数据落在
+/// `<exe目录>\data\`，整个程序目录拷走即可迁移（见 `portable_root_in`）。
 pub fn app_data_root() -> PathBuf {
+    if let Some(dir) = portable_root() {
+        return dir;
+    }
     if let Ok(dir) = std::env::var("APPDATA") {
         return PathBuf::from(dir).join("ytdlp-desktop");
     }
@@ -16,6 +70,15 @@ pub fn app_data_root() -> PathBuf {
         return PathBuf::from(dir).join("ytdlp-desktop");
     }
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config/ytdlp-desktop")
+}
+
+/// 当前数据目录 + 是否便携模式。
+///
+/// 设置页要显示这个：用户最常问的就是「我的历史存哪了」，而 `%APPDATA%`
+/// 在资源管理器里默认还是隐藏的。
+pub fn data_dir_info() -> (PathBuf, bool) {
+    let portable = portable_root().is_some();
+    (app_data_root(), portable)
 }
 
 /// 当前 exe 所在目录 —— Tauri 的 `externalBin` 落点。
@@ -345,5 +408,53 @@ mod tests {
         let root = PathBuf::from("/tmp/root");
         assert_eq!(task_temp_dir_in(&root, "a"), task_temp_dir_in(&root, "a"));
         assert!(task_temp_dir_in(&root, "a").ends_with("a"));
+    }
+
+    // ─────────── 便携模式 ───────────
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ytdlp-portable-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// 没有标记文件 -> 不是便携模式（**不能**因为「exe 旁边能写」就自动切换，
+    /// 那会让同一个 exe 在不同机器上把数据写到不同地方）。
+    #[test]
+    fn no_marker_means_not_portable() {
+        let d = temp_dir("nomarker");
+        assert_eq!(portable_root_in(&d), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 有标记文件 -> 数据落在 `<exe目录>\data`，目录会被建出来。
+    #[test]
+    fn marker_enables_portable_data_dir() {
+        let d = temp_dir("marker");
+        std::fs::write(d.join(PORTABLE_MARKER), b"portable").unwrap();
+        let got = portable_root_in(&d).expect("应当进入便携模式");
+        assert_eq!(got, d.join(PORTABLE_DATA_DIR));
+        assert!(got.is_dir(), "data 目录应当被创建");
+        // 探针文件不能留下
+        assert!(!got.join(".writable-probe").exists(), "探针文件应当被删掉");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 标记在但目录建不出来（这里用一个同名**文件**把 `data` 占住）-> 退回 AppData。
+    /// 否则之后每次写盘都会以一个看不懂的错误炸掉。
+    #[test]
+    fn unwritable_portable_dir_falls_back() {
+        let d = temp_dir("unwritable");
+        std::fs::write(d.join(PORTABLE_MARKER), b"portable").unwrap();
+        std::fs::write(d.join(PORTABLE_DATA_DIR), b"i am a file, not a dir").unwrap();
+        assert_eq!(portable_root_in(&d), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 标记文件名不能被随手改掉——改了就等于老用户的便携模式无声失效。
+    #[test]
+    fn marker_name_is_a_contract() {
+        assert_eq!(PORTABLE_MARKER, "portable.txt");
     }
 }

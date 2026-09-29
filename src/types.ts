@@ -257,6 +257,19 @@ export interface FormatPreset {
   expr: string
 }
 
+/**
+ * 数据目录（设置、历史、cookies 所在处）。
+ *
+ * `portable` 为真表示数据放在**程序目录下的 `data\`**，
+ * 整个文件夹拷走就是完整迁移。
+ */
+export interface DataDirInfo {
+  root: string
+  portable: boolean
+  /** 便携模式的标记文件名（要在界面上告诉用户建哪个文件）。 */
+  marker: string
+}
+
 /** JS 运行时检测结果。 */
 export interface JsRuntimeInfo {
   /** 实际检测到的运行时名，按偏好排序。 */

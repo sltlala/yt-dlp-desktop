@@ -32,6 +32,25 @@ scripts/resize-window.ps1  把窗口精确调到指定 CSS 尺寸（验证最小
 
 ## 开发
 
+### 数据存在哪
+
+默认在 `%APPDATA%\ytdlp-desktop\`（设置页「常规 → 数据目录」里有路径和一个「打开」按钮，
+因为 `AppData` 在资源管理器里默认是隐藏的，很难找）。
+
+**想做成便携式**（整个文件夹拷走就能带走设置和历史）：在 **exe 同目录**建一个空的
+`portable.txt`，重启后数据改落到 `<exe目录>\data\`。
+
+```powershell
+# 拿开发版举例（exe 在 target\debug\）
+New-Item target\debug\portable.txt
+# 想把现有数据带过去，再复制一份（关掉应用再复制）
+Copy-Item "$env:APPDATA\ytdlp-desktop\*" target\debug\data\ -Recurse
+```
+
+⚠️ 只放标记文件是**从零开始**（默认设置 + 空历史），不会自动搬迁——
+在别人机器上跑一次就把那边的历史拷进来才是真的吓人。要旧数据就手动复制。
+详见 DESIGN §5.6。
+
 ```bash
 npm install            # 首次
 

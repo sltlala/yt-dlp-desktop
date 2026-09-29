@@ -2,7 +2,14 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useTaskStore } from '../stores/tasks'
 import { api, type ProbeResult, type UpdateInfo } from '../ipc'
-import type { BrowserChoice, CodecChoices, CookieProfile, JsRuntimeInfo, Settings } from '../types'
+import type {
+  BrowserChoice,
+  CodecChoices,
+  CookieProfile,
+  DataDirInfo,
+  JsRuntimeInfo,
+  Settings,
+} from '../types'
 import { deepClone, ellipsizePath, fmtTime } from '../utils'
 
 const emit = defineEmits<{ close: [] }>()
@@ -110,9 +117,25 @@ onMounted(() => {
   void loadJsRuntimes()
   void loadAria2c()
   void loadCodecChoices()
+  void loadDataDir()
   // 选「跟随系统代理」时要把系统那份读出来展示，进页面就先取一次
   if (s.proxyMode === 'system') void loadSystemProxy()
 })
+
+/* ── 数据目录（DESIGN §5.6）──
+ *
+ * 用户最常问的就是「我的历史存哪了」。AppData 在资源管理器里默认还是隐藏的，
+ * 所以把路径直接摆出来，并说明怎么切成便携模式。
+ */
+const dataDir = ref<DataDirInfo | null>(null)
+
+async function loadDataDir() {
+  try {
+    dataDir.value = await api.dataDir()
+  } catch {
+    /* 取不到就不显示这一栏，不影响别的设置 */
+  }
+}
 
 /* ── 优先选择编码（DESIGN §3.3）──
  *
@@ -699,6 +722,24 @@ const templateWarning = computed(() => {
               </button>
             </div>
             <em v-if="dirWarning('tempDir')" class="path-warn">{{ dirWarning('tempDir') }}</em>
+          </div>
+          <div class="field">
+            <span>数据目录<em>设置、历史记录、cookies 都在这里{{ dataDir?.portable ? '（便携模式）' : '' }}</em></span>
+            <div class="path-row">
+              <input :value="dataDir?.root ?? ''" class="mono" readonly spellcheck="false" />
+              <button
+                class="btn sm"
+                :disabled="!dataDir?.root"
+                title="在资源管理器中打开这个目录"
+                @click="openDir(dataDir?.root ?? '')"
+              >
+                打开
+              </button>
+            </div>
+            <em v-if="dataDir && !dataDir.portable" class="path-hint">
+              想让整个文件夹可以拷走就用便携模式：在程序目录（exe 旁边）建一个空的
+              <code>{{ dataDir.marker }}</code>，重启后数据会改放到程序目录下的 <code>data\</code>。
+            </em>
           </div>
           <div class="field">
             <span>文件名模板<em>决定下载下来的文件叫什么；下面有可用字段清单</em></span>
@@ -1519,6 +1560,18 @@ textarea.mono:focus {
   font-style: normal;
   font-size: var(--fs-2xs);
   color: var(--warn);
+}
+/* 路径字段下面的补充说明（比 path-warn 弱：只是提示，不是警告） */
+.path-hint {
+  font-style: normal;
+  font-size: var(--fs-2xs);
+  color: var(--text-mute);
+  line-height: 1.6;
+}
+.path-hint code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-2);
 }
 
 /* ── 文件名模板 ── */

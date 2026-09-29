@@ -869,6 +869,21 @@ fn read_clipboard() -> Result<String, String> {
     clipboard::read_text()
 }
 
+/// 当前数据目录（设置、历史、cookie 都在这儿）+ 是否便携模式。
+///
+/// 用户最常问的就是「我的历史存哪了」，而 `%APPDATA%` 在资源管理器里
+/// 默认是隐藏的——所以直接把路径摆到设置页上。
+#[tauri::command]
+fn data_dir() -> Value {
+    let (root, portable) = paths::data_dir_info();
+    json!({
+        "root": root.to_string_lossy(),
+        "portable": portable,
+        // 便携模式的标记文件名，界面照着它提示用户
+        "marker": paths::PORTABLE_MARKER,
+    })
+}
+
 /// aria2c 可执行文件信息，供设置页展示。
 ///
 /// 用户需要知道**当前用的是哪一份**：随包的出厂副本、还是 PATH 上那份旧的。
@@ -1007,6 +1022,7 @@ pub fn run() {
             list_browsers,
             detect_js_runtimes,
             codec_choices,
+            data_dir,
             format_presets,
             preview_format_expression,
             read_clipboard,
