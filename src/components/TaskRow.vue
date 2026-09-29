@@ -16,8 +16,19 @@ const selected = computed(() => store.selected.has(t.value.id))
 /**
  * 进度比例。**总大小未知时返回 null** —— 界面必须切「不确定态」，
  * 而不是显示 0%（HANDOFF §3.2）。
+ *
+ * ⚠️ **终态一律画满，不看进度数字。**
+ *
+ * 实测踩到：一个任务暂停后继续下完，状态是「已完成」，进度条却停在 93%。
+ * 存下来的数字是 `downloaded=14680064 / total=15728640`，而成品有 **660 MB** ——
+ * 因为用 aria2c 时进度来自它自己的 summary，而它**是按文件报的**：
+ * 视频轨下完接着下音频轨，最后一条进度就是那条 15MB 音频轨的（93%）。
+ *
+ * 结论：**结局比进度数字可信**。任务已经 completed / skipped 了，
+ * 那文件就是齐了，条就该满——没必要让用户对着一根差一截的条怀疑人生。
  */
 const fraction = computed(() => {
+  if (t.value.state === 'completed' || t.value.state === 'skipped') return 1
   const { downloaded, total } = t.value.progress
   if (total === null || total === 0 || downloaded === null) return null
   return Math.max(0, Math.min(1, downloaded / total))
