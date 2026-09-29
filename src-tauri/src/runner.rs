@@ -237,6 +237,7 @@ pub async fn run_download(app: AppHandle, task_id: String) {
     let aria2c_dir = prepare_aria2c(&app, &task_id, &mut spec);
 
     let args = ytdlp_core::build_download_args(&spec);
+    log_command("下载", &task_id, &exe, &args);
 
     update(&app, &task_id, |t| {
         t.state = "downloading".into();
@@ -269,6 +270,7 @@ pub async fn run_download(app: AppHandle, task_id: String) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
+            crate::logfile::error(format!("[{task_id}] 无法启动 yt-dlp：{e}"));
             update(&app, &task_id, |t| {
                 t.state = "failed".into();
                 t.error = Some(format!("无法启动 yt-dlp：{e}"));
@@ -353,6 +355,77 @@ pub async fn run_download(app: AppHandle, task_id: String) {
             }
         }
     });
+
+    // 终态记一行：出问题时，日志里这一行往往就是唯一能说明「当时怎么了」的线索。
+    if let Ok(tasks) = app.state::<AppState>().tasks.lock() {
+        if let Some(t) = tasks.iter().find(|x| x.id == task_id) {
+            let detail = t
+                .error
+                .as_deref()
+                .map(|e| format!("  错误：{}", e.replace('\n', " ")))
+                .unwrap_or_default();
+            let line = format!("[{task_id}] 结束：{}  exit={code}{detail}", t.state);
+            if t.state == "failed" || t.state == "canceled" {
+                crate::logfile::warn(line);
+            } else {
+                crate::logfile::info(line);
+            }
+        }
+    }
+}
+
+/// 把命令行渲染成一行可读文本（带空格/引号的参数加引号，代理解码打码）。
+///
+/// 抽成纯函数是为了能单测**打码**这件事——日志文件是要发给别人看的，
+/// 里面出现代理密码就是事故。
+fn render_command_args(args: &[String]) -> String {
+    args.iter()
+        .map(|a| {
+            // 只对代理参数打码：其他参数里没有密码。
+            // 判据用「像不像代理 URL」，而不是「含不含 @」——后者会把
+            // `--cookies user@example.com.txt` 这类路径也误伤。
+            if a.starts_with("http://") || a.starts_with("https://") || a.starts_with("socks5") {
+                redact_proxy(a)
+            } else if a.contains(' ') {
+                format!("\"{a}\"")
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 把一次 yt-dlp 调用的完整命令行写进日志。
+///
+/// **这是排查问题时最想看的一行**：应用到底怎么调用 yt-dlp 的、带了哪些参数，
+/// 光看界面上的「下载失败」永远推不出来。
+fn log_command(kind: &str, task_id: &str, exe: &std::path::Path, args: &[String]) {
+    crate::logfile::info(format!(
+        "[{task_id}] {kind} 命令：{} {}",
+        exe.display(),
+        render_command_args(args)
+    ));
+}
+
+/// 一条子进程输出里**没被解析器认领**的行。
+///
+/// `stream_lines` 会把认不出的行直接丢掉——而 yt-dlp 的 `ERROR:` / `WARNING:` /
+/// 提取器自己的说明恰好都在里面。丢掉就等于出问题时毫无线索，所以至少留一份在日志里。
+fn log_raw_line(task_id: &str, line: &str) {
+    // 别把整份日志淹掉：只记有信息量的
+    let l = line.trim();
+    if l.is_empty() {
+        return;
+    }
+    let interesting = l.starts_with("ERROR")
+        || l.starts_with("WARNING")
+        || l.starts_with("[")
+        || l.contains("Error")
+        || l.contains("error");
+    if interesting {
+        crate::logfile::info(format!("[{task_id}] {l}"));
+    }
 }
 
 /// 逐行读取子进程输出。
@@ -382,6 +455,9 @@ where
         }
         if let Some(ev) = parse_line(&line) {
             handle_event(&app, &task_id, ev);
+        } else {
+            // 认不出的行以前是直接丢掉的——那正是 yt-dlp 自己的报错与说明
+            log_raw_line(&task_id, &line);
         }
     }
 }
@@ -708,12 +784,12 @@ pub async fn run_probe(app: AppHandle, task_id: String) {
     //
     // 带上 `-f` 是为了拿 `requested_downloads`（预估大小）。实测带 `-f` 时
     // `formats` 数组依然完整，格式表不受影响。
-    let info = match probe_once(&exe, &url, &settings, Some(&expression)).await {
+    let info = match probe_once(&exe, &task_id, &url, &settings, Some(&expression)).await {
         Ok(i) => i,
         Err(first) => {
             // ⚠️ 表达式不可满足时 yt-dlp **整个探测都会失败**（exit=1，连 JSON 都不给）。
             // 预估大小可以让步，元数据与格式表不能让——退回不带 `-f` 再探一次。
-            match probe_once(&exe, &url, &settings, None).await {
+            match probe_once(&exe, &task_id, &url, &settings, None).await {
                 Ok(i) => {
                     // 只有确认是「格式不可用」才告警：如果是偶发网络抖动导致的失败，
                     // 提示「你的格式表达式不可用」就是误导。
@@ -751,6 +827,7 @@ struct ProbeFailure {
 /// 跑一次探测。`format` 为 `Some` 时会带上 `-f`，从而拿到预估大小。
 async fn probe_once(
     exe: &std::path::Path,
+    task_id: &str,
     url: &str,
     settings: &Value,
     format: Option<&str>,
@@ -765,6 +842,7 @@ async fn probe_once(
         format,
         impersonate_of(settings),
     );
+    log_command("探测", task_id, exe, &args);
 
     let out = tokio::process::Command::new(exe)
         .args(&args)
@@ -958,6 +1036,49 @@ pub fn cancel_task(app: &AppHandle, task_id: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ─────────── 日志里的命令行渲染 ───────────
+
+    /// ⚠️ 最重要的一条：**代理密码不能进日志**。
+    /// 日志文件是用户要发出来给人定位问题的，里面出现密码就是事故。
+    #[test]
+    fn logged_command_redacts_proxy_password() {
+        let args: Vec<String> = ["--proxy", "http://alice:s3cr3t@127.0.0.1:7897", "--", "https://x"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let out = render_command_args(&args);
+        assert!(!out.contains("s3cr3t"), "密码泄露了：{out}");
+        assert!(out.contains("***"), "应当打码成 ***：{out}");
+        // 主机端口要留着——排查问题时正需要它
+        assert!(out.contains("127.0.0.1:7897"), "主机端口不该被抹掉：{out}");
+        assert!(out.contains("alice"), "用户名可以留：{out}");
+    }
+
+    /// 含 @ 的**路径**不能被误当成代理打码。
+    #[test]
+    fn logged_command_does_not_mangle_non_proxy_args() {
+        let args: Vec<String> = ["--cookies", "C:\\u@home\\cookies.txt", "--output", "%(title)s.%(ext)s"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let out = render_command_args(&args);
+        assert!(out.contains("C:\\u@home\\cookies.txt"), "路径被改坏了：{out}");
+        assert!(!out.contains("***"), "不该出现打码：{out}");
+    }
+
+    /// 带空格的参数要加引号，否则日志里看不出那是一个参数。
+    #[test]
+    fn logged_command_quotes_args_with_spaces() {
+        let args: Vec<String> = ["--paths", "home:E:\\My Videos\\out"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let out = render_command_args(&args);
+        assert!(out.contains("\"home:E:\\My Videos\\out\""), "实际: {out}");
+        // 不含空格的参数不该被加引号（加了反而不好读）
+        assert!(out.contains("--paths "), "实际: {out}");
+    }
 
     #[test]
     fn manual_mode_builds_url() {

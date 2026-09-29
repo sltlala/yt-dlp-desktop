@@ -634,7 +634,12 @@ class MockBackend {
 
   async dataDir(): Promise<DataDirInfo> {
     // mock 里没有真实目录，给一个看得懂的位置即可
-    return { root: 'C:\\Users\\demo\\AppData\\Roaming\\ytdlp-desktop', portable: false, marker: 'portable.txt' }
+    return {
+      root: 'C:\\Users\\demo\\AppData\\Roaming\\ytdlp-desktop',
+      portable: false,
+      marker: 'portable.txt',
+      log: 'C:\\Users\\demo\\AppData\\Roaming\\ytdlp-desktop\\logs\\app.log',
+    }
   }
 
   async detectJsRuntimes(): Promise<JsRuntimeInfo> {

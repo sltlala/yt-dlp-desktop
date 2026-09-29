@@ -742,6 +742,20 @@ const templateWarning = computed(() => {
             </em>
           </div>
           <div class="field">
+            <span>日志<em>下载失败时可以把这个文件发出来定位</em></span>
+            <div class="path-row">
+              <input :value="dataDir?.log ?? '（启动中…）'" class="mono" readonly spellcheck="false" />
+              <button
+                class="btn sm"
+                :disabled="!dataDir?.log"
+                title="在资源管理器中定位日志文件"
+                @click="revealPath(dataDir?.log ?? '')"
+              >
+                定位
+              </button>
+            </div>
+          </div>
+          <div class="field">
             <span>文件名模板<em>决定下载下来的文件叫什么；下面有可用字段清单</em></span>
             <div class="path-row">
               <input

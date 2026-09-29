@@ -243,11 +243,11 @@ fn resolve_tool(
             return Some(c);
         }
         // 明确记下来，否则「明明有却报找不到」会非常难查
-        eprintln!(
+        crate::logfile::warn(format!(
             "跳过不可用的 {}（可能是被单独复制的残缺副本）: {}",
             tool.display_name(),
             c.display()
-        );
+        ));
     }
 
     // PATH 上可能有 locate 没覆盖到的写法，最后再用 shell 找一次

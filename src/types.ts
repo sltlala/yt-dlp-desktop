@@ -275,6 +275,8 @@ export interface DataDirInfo {
   portable: boolean
   /** 便携模式的标记文件名（要在界面上告诉用户建哪个文件）。 */
   marker: string
+  /** 日志文件完整路径；启动早期取不到时为 null。 */
+  log: string | null
 }
 
 /** JS 运行时检测结果。 */

@@ -5,6 +5,7 @@
 
 mod clipboard;
 mod cookies;
+mod logfile;
 mod net;
 mod paths;
 mod runner;
@@ -892,6 +893,8 @@ fn data_dir() -> Value {
         "portable": portable,
         // 便携模式的标记文件名，界面照着它提示用户
         "marker": paths::PORTABLE_MARKER,
+        // 日志路径（`<数据目录>\logs\app.log`），出问题时用户要能直接找到它
+        "log": logfile::path().map(|p| p.to_string_lossy().into_owned()),
     })
 }
 
@@ -970,10 +973,43 @@ pub fn run() {
             if let Ok(mut s) = state.settings.lock() {
                 *s = normalize_settings(load_settings());
             }
+
+            // 日志要在**任何可能出错的步骤之前**初始化，否则早期失败就没记录。
+            // 放在数据目录下：便携模式下它就在程序目录里（DESIGN §5.6）。
+            logfile::init(paths::app_data_root().join("logs"));
+            let (data_root, portable) = paths::data_dir_info();
+            logfile::info("================ 启动 ================");
+            logfile::info(format!(
+                "版本 {}  数据目录 {}  便携模式 {}",
+                env!("CARGO_PKG_VERSION"),
+                data_root.display(),
+                if portable { "是" } else { "否" }
+            ));
+            match paths::resolve_ytdlp() {
+                Some(p) => logfile::info(format!("yt-dlp: {}", p.display())),
+                None => logfile::error(format!(
+                    "没找到可用的 yt-dlp，候选：{}",
+                    paths::diagnose_ytdlp()
+                        .iter()
+                        .map(|(p, e, u)| format!(
+                            "{}[{}{}]",
+                            p,
+                            if *e { "存在" } else { "不存在" },
+                            if *u { "可用" } else { "" }
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            }
+            match paths::resolve_aria2c() {
+                Some(p) => logfile::info(format!("aria2c: {}", p.display())),
+                None => logfile::info("aria2c: 未找到（会用内置下载器）"),
+            }
+
             // 恢复下载历史，并把崩溃时残留的进行中任务重置为 paused（DESIGN §5.3）。
             if let Err(e) = state.init_db(&paths::db_file()) {
                 // 数据库坏掉不该让应用起不来：空列表继续跑，用户还能重新下载
-                eprintln!("初始化任务数据库失败，本次以空历史启动：{e}");
+                logfile::error(format!("初始化任务数据库失败，本次以空历史启动：{e}"));
             }
             sweep_orphan_temp_dirs(&state);
             // 上次更新留下的 .old 此时进程已退出，可以安全删除（DESIGN §8）
@@ -996,7 +1032,7 @@ pub fn run() {
                     let st = handle.state::<AppState>();
                     if st.has_pending() {
                         if let Err(e) = st.flush() {
-                            eprintln!("写入任务历史失败：{e}");
+                            logfile::error(format!("写入任务历史失败：{e}"));
                         }
                     }
                 }

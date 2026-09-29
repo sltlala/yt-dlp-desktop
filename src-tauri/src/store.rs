@@ -68,7 +68,7 @@ pub fn load_all(conn: &Connection) -> Result<Vec<Task>, String> {
         };
         match serde_json::from_str::<Task>(&json) {
             Ok(t) => out.push(t),
-            Err(e) => eprintln!("跳过一条无法解析的任务记录：{e}"),
+            Err(e) => crate::logfile::warn(format!("跳过一条无法解析的任务记录：{e}")),
         }
     }
     Ok(out)
