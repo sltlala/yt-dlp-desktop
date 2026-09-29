@@ -645,21 +645,54 @@ yt-dlp 更新流程：`GET api.github.com/repos/yt-dlp/yt-dlp/releases/latest` �
 - 任务数可能上百 → 必须**虚拟滚动**，否则 DOM 爆炸
 - **「正在合并」必须在行内有明确视觉**（理由见 §5.4）
 
-### 9.0 右键菜单要压掉，但不能一刀切
+### 9.0 右键菜单：换成我们自己的，**不要放行原生菜单**
 
-Tauri 的 WebView2 默认弹出 **Edge 的浏览器菜单**（返回 / 刷新 / 另存为 / 打印 /
-更多工具 / 检查）。在一个桌面应用里这既不像原生，也有实际危害：
-「刷新」会把没保存的设置改动丢掉，「检查」会在界面上开一个 DevTools。
+Tauri 的 WebView2 默认弹出 **Edge 的浏览器菜单**。在一个桌面应用里这既不像原生，
+也有实际危害：「刷新」会把没保存的设置改动丢掉，「检查」会在界面上开一个 DevTools。
 
-但**不能全局 `preventDefault`**：输入框里右键要能**粘贴**（设置页、添加链接都要用），
-选中文字后右键要能**复制**（复制链接、文件名）。
+**踩过的弯路**：第一版规则是「既不是可编辑字段、也没有选中文字时才压掉」，
+想着「选中文字时留原生菜单好让用户复制」。结果用户选中链接再右键，
+弹出来的还是**整份浏览器菜单**——表情符号 / 导入密码 / 书写方向 / 更多工具 / 检查。
+放行原生菜单等于放行**全部**浏览器入口，没有中间态。
 
-所以规则是「既不是可编辑字段、也没有选中文字」时才压掉（`src/contextMenu.ts`），
-在 `mount` 之前挂到 `document` 的**捕获阶段**（免得被某个组件的
-`stopPropagation` 挡掉）。
+现在的做法：**除了输入框，一律压掉**，然后弹一个我们自己的菜单
+（`src/contextMenu.ts`）：
+
+| 右键位置 | 行为 |
+|---|---|
+| 有选中文字 | 压掉原生，弹「复制」 |
+| 无选中、非输入框 | 只压掉，不弹任何东西 |
+| 输入框 | **放行原生菜单**（见下） |
+
+「复制」我们自己实现：`navigator.clipboard.writeText`，失败回落到隐藏 textarea +
+`execCommand('copy')`。菜单用 fixed + `clientX/clientY` 定位并夹进视口，
+点外部 / 滚动 / Esc / 失焦都收起。
+
+#### 为什么输入框必须放行
+
+**粘贴做不了**，只能靠原生菜单：
+
+- `navigator.clipboard.readText()` 在 WebView2 里会**挂住**——实测它等一个
+  权限弹窗（`edge://permission-request-dialog/`），没人点就永远不返回；
+- `document.execCommand('paste')` 恒返回 `false`（Chromium 出于安全禁掉了）。
+
+而输入框正是粘贴最常用的地方（添加链接）。所以那里保留原生菜单，
+代价是输入框上仍会看到浏览器菜单——这是「能用」与「干净」之间**有意识**的取舍。
+
+> 想彻底干净就得走后端剪贴板（Tauri clipboard 插件），目前不做。
+
+#### 验证方式
+
+页面里 `dispatchEvent` 造的是**不可信事件**，没有 user activation，
+`writeText` 与 `execCommand('copy')` 都会拒绝——这样测会误判成「复制坏了」。
+必须用 CDP 的 `Input.dispatchMouseEvent` 发真实点击（`scripts/cdp-attach.mjs`
+的同类工具即可），并配合 `scripts/focus-window.ps1` 把窗口置前
+（文档不聚焦时剪贴板 API 一律报 `NotAllowedError: Document is not focused`）。
+
+实测：选中标题 → 右键 → 只出现「复制」一项 → 真实左键点击 → 剪贴板里正是那段文字。
 
 > 副作用：DevTools 的入口没了。开发期本来也不靠它——工具走
-> `--remote-debugging-port` + `scripts/cdp-attach.mjs`（见 RESUME）。
+> `--remote-debugging-port` + `scripts/cdp-attach.mjs`（见 RESUME）；
 > 发布版 Tauri 默认也不启用 devtools。
 
 第二个交互难点（与格式选择并列）：**播放列表**。

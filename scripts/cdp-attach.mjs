@@ -32,11 +32,13 @@ for (let i = 0; i < 40; i++) {
   await sleep(250)
 }
 
-// ⚠️ 必须优先挑**应用页面**：在页面里右键 →「检查」会开出一个 `devtools://`
-// 的 page 目标，直接取第一个的话会把工具接到 DevTools 自己身上（报的错还完全
-// 指不到原因——表达式语法明明是对的）。
+// ⚠️ 必须优先挑**应用页面**。CDP 的 page 目标里混着一堆浏览器自己的窗口：
+//   - `devtools://`                        —— 页面里右键「检查」开出来的
+//   - `edge://permission-request-dialog/`  —— 剪贴板之类的权限弹窗
+// 直接取第一个就会接到它们身上，报的错完全指不到原因（表达式语法明明是对的）。
+// 判据用「是不是 http(s)」最省事，以后再多出别的内部页也不怕。
 const pages = targets?.filter((t) => t.type === 'page') ?? []
-const page = pages.find((t) => !t.url.startsWith('devtools://')) ?? pages[0]
+const page = pages.find((t) => /^https?:/.test(t.url)) ?? pages[0]
 if (!page) {
   console.error(`端口 ${PORT} 上未找到调试目标`)
   process.exit(1)

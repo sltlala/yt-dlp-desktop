@@ -267,3 +267,45 @@ select {
   color: var(--text-mute);
   text-align: center;
 }
+
+/* ── 自定义右键菜单（DESIGN §9.0）──
+ *
+ * 浏览器那份默认菜单已经被压掉了（它会带出「刷新 / 检查 / 导入密码」这些
+ * 跟这个应用无关的东西），只留我们自己的这几项。
+ * 是 fixed：用 clientX/clientY 定位，跟着视口走。
+ */
+.ctx-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 140px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.16);
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: default;
+}
+.ctx-item:hover {
+  background: var(--accent-dim);
+}
+.ctx-item em {
+  font-style: normal;
+  font-size: var(--fs-2xs);
+  color: var(--text-mute);
+}
