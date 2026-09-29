@@ -69,11 +69,6 @@ const rows = computed(() => {
       // 有值时不再补一句「成品文件的实际大小」——标题已经说了，纯重复
       hint: t.value.sizeActual ? undefined : '下载完成后才有',
     },
-    {
-      k: '进度来源',
-      v: t.value.usedAria2c ? 'aria2c 自身输出（精度略低）' : 'yt-dlp',
-      hint: t.value.usedAria2c ? '用 aria2c 时 yt-dlp 不上报进度' : undefined,
-    },
     { k: '添加时间', v: fmtTime(t.value.addedAt) },
     { k: '完成时间', v: fmtTime(t.value.finishedAt) },
   ]
