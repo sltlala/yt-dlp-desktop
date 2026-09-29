@@ -770,7 +770,6 @@ const templateWarning = computed(() => {
               </div>
               <p class="note">
                 字段名拼错时 yt-dlp <strong>不会报错</strong>，会静默填成 <code>NA</code>。
-                完整清单见 yt-dlp 文档的「Output Template」一节。
               </p>
             </details>
           </div>
@@ -780,7 +779,6 @@ const templateWarning = computed(() => {
           </label>
 
           <h3>并发</h3>
-          <p class="note">探测请求轻、可高；下载重、易触发限流，两者必须分开。</p>
           <label class="field inline">
             <span>探测并发</span>
             <input v-model.number="s.probeConcurrency" type="number" min="1" max="16" />
@@ -790,7 +788,7 @@ const templateWarning = computed(() => {
             <input v-model.number="s.downloadConcurrency" type="number" min="1" max="8" />
           </label>
           <label class="field inline">
-            <span>同一站点并发<em>比全局降并发更有效</em></span>
+            <span>同一站点并发</span>
             <input v-model.number="s.perHostConcurrency" type="number" min="1" max="4" />
           </label>
         </section>
@@ -835,15 +833,17 @@ const templateWarning = computed(() => {
               <option value="webm">WebM</option>
             </select>
           </label>
-          <p class="note warn">
-            启用缩略图嵌入时 WebM 会<strong>直接失败</strong>；MP4 的缩略图依赖三级回落且字幕只能用
-            mov_text。MKV 是唯一全部可用的容器，因此自动模式会切到 MKV。
+          <!-- 只在**真的会失败**的组合下提示，平时不占版面 -->
+          <p v-if="s.container === 'webm' && s.embed.thumbnail" class="note warn">
+            WebM 装不下缩略图，这样组合会<strong>直接失败</strong>——请改用 MKV 或「自动」。
+          </p>
+          <p v-else-if="s.container === 'mp4' && s.embed.subs" class="note warn">
+            MP4 的字幕只能用 mov_text；想要完整字幕样式请改用 MKV。
           </p>
 
           <h3>优先选择编码</h3>
           <p class="note">
-            只是一种<strong>偏好</strong>：站点没有首选编码时会自动退到次选，
-            不会因此下不到。留空表示不干预 yt-dlp 的默认挑法。
+            只是一种<strong>偏好</strong>：站点没有首选编码时会自动退到次选，不会因此下不到。
           </p>
           <div class="codec-grid">
             <label class="field inline">
@@ -906,9 +906,6 @@ const templateWarning = computed(() => {
             <span>嵌入元数据</span>
           </label>
           <template v-if="s.embed.metadata">
-            <p class="note">
-              --embed-metadata 默认还会嵌入章节与 infojson，这里已显式关闭，可按需开启。
-            </p>
             <label class="check sub">
               <input v-model="s.embed.chapters" type="checkbox" />
               <span>同时嵌入章节</span>
@@ -931,8 +928,7 @@ const templateWarning = computed(() => {
             <span>使用 aria2c 多线程下载<em>高级选项，默认关闭</em></span>
           </label>
           <p class="note warn">
-            aria2c 会让 yt-dlp 完全不上报进度（实测 0 条），进度改为解析 aria2c 自身的输出；
-            且它对不支持 Range 的服务器会直接失败。失败时会自动回落原生下载。
+            进度改由 aria2c 上报，精度略低；遇到不支持 Range 的服务器会失败，失败时自动回落原生下载。
           </p>
 
           <h3>下载归档</h3>
@@ -962,10 +958,6 @@ const templateWarning = computed(() => {
           </p>
 
           <h3>JS 运行时</h3>
-          <p class="note warn">
-            YouTube 的 n-sig 挑战需要 JS 运行时。yt-dlp<strong>不会自动启用</strong>已安装的
-            ——不给的话会返回「需要重载页面」或只给预览图。留空即自动检测。
-          </p>
           <div class="js-list">
             <span
               v-for="c in jsInfo?.candidates ?? []"
@@ -987,11 +979,6 @@ const templateWarning = computed(() => {
           </label>
 
           <h3>aria2c（多线程下载器）</h3>
-          <p class="note">
-            随包分发的第三方程序，查找顺序与 yt-dlp 一致：
-            <strong>随包副本 → AppData → PATH</strong>。
-            它让一个文件分多段并行下载，速度通常明显更快。
-          </p>
           <p v-if="ariaInfo?.found" class="sub-line">
             {{ ariaInfo.version }}<br />
             <code class="mono">{{ ellipsizePath(ariaInfo.path ?? '', 76) }}</code>
@@ -1002,11 +989,6 @@ const templateWarning = computed(() => {
           </p>
 
           <h3>yt-dlp 版本</h3>
-          <p class="note">
-            换掉一个 <code>yt-dlp.exe</code> 就能修好全部站点问题，
-            <strong>不需要重新发版应用</strong>。升级副本写在 AppData，
-            不需要管理员权限，也不会被安装器的「修复」还原。
-          </p>
           <div class="row-inline test-row">
             <button class="btn sm" :disabled="updateBusy" @click="checkUpdate">
               {{ updateBusy ? '处理中…' : '检查更新' }}

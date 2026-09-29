@@ -61,14 +61,12 @@ const rows = computed(() => {
     {
       k: '预估大小',
       v: t.value.sizeEstimate ? fmtBytes(t.value.sizeEstimate) : '—',
-      hint:
-        '由解析结果推算：按当前格式表达式实际会选中的音视频轨体积之和。' +
-        '合并、嵌入字幕/缩略图后成品通常会更大。',
+      hint: '估算值；合并音视频轨、嵌入字幕后成品通常更大',
     },
     {
       k: '实际大小',
       v: t.value.sizeActual ? fmtBytes(t.value.sizeActual) : '—',
-      hint: t.value.sizeActual ? '下载完成后的成品文件大小（读自磁盘）' : '下载完成后才有',
+      hint: t.value.sizeActual ? '成品文件的实际大小' : '下载完成后才有',
     },
     {
       k: '进度来源',
