@@ -778,6 +778,42 @@ except ExtractorError as e:
 
 用户没要求开模拟，是**这一个站点这一次**需要，不该顺手改掉他所有的下载。
 
+#### ⚠️ 触发条件有两种，不只 Cloudflare
+
+第一版只认 yt-dlp 那句 `Cloudflare anti-bot challenge`。**实测漏了**：
+yt-dlp 只有在**认出**那是 Cloudflare 挑战时才说那句话——它要求响应头有
+`cf-mitigated: challenge`，或页面标题正好是 `Attention Required! | Cloudflare`。
+很多站点用自家规则（或 CDN 没带那个头），同样是 403 却只报：
+
+```
+ERROR: [generic] watch?v=xxx: Unable to download webpage: HTTP Error 403: Forbidden
+```
+
+这两种对指纹模拟的反应是一样的，所以 `worth_impersonating()` 收两种：
+
+| 形态 | 判据 |
+|---|---|
+| 带标记的 Cloudflare | 出现 `Cloudflare anti-bot challenge` |
+| 没标记的普通 403 | 同时出现 `[generic]` 与 `HTTP Error 403` |
+
+只认 `[generic]`：别的提取器被 403 挡了是它自己的事，改指纹帮不上，
+没道理白跑一遍。
+
+#### 顺带修掉一个误导性的错误分类
+
+同一次实测暴露的：上面那种 403 会被 `classify_error` 归到
+`Unable to download webpage` 那一支，显示成
+
+> **网络不可达（检查代理设置）**
+
+可站点**明明答了**，只是拒绝了我们。这句提示会把用户引到完全相反的方向
+（去查代理），而真正该做的是开指纹模拟或换出口 IP。
+
+现在：
+- `Cloudflare anti-bot challenge` 的分支**提到网络那一支之前**（特定优先）；
+- `Unable to download webpage` 那支里若裹着 HTTP 4xx/5xx，改说「站点拒绝了这次请求
+  （HTTP 错误，不是网络不通）」并给出该做什么；只有真连不上才说「网络不可达」。
+
 > 验证方式：`scripts/fake-cloudflare.py` 起一个一律返回
 > `403 + cf-mitigated: challenge` 的假站（真站点不好找，也不该拿别人站点压测）。
 > 实测日志：

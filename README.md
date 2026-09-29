@@ -179,6 +179,7 @@ yt-dlp 有两种发行形态，**只有一种能直接放进 `externalBin`**：
 | **同步的 `#[tauri::command]` 会冻住整个窗口** | 它跑在主线程（Windows 消息循环）上，稍慢就是整窗无响应——标题栏都点不动。`aria2c_info` 要起进程，就是靠这个把「进设置再返回」弄卡的 | 凡做 IO（文件/进程/网络/剪贴板）的命令一律 `#[tauri::command(async)]`（DESIGN §4.4） |
 | **CDP 的合成点击测不出整窗卡死** | 它直接投给渲染进程、绕过宿主消息循环，主线程堵死时合成点击仍然 2ms 返回 | 用 `SendMessageTimeout(..., SMTO_ABORTIFHUNG)` 探宿主是否还在处理消息 |
 | **Cloudflare 403 要开 `generic:impersonate`** | 报错原文是命令行参数，界面用户够不着。**随包的 yt-dlp 已经带了 `curl_cffi`**（`--list-impersonate-targets` 有 17 个目标），所以只差把参数传进去 | 撞上拦截时**自动带指纹重试一次**（任务级旗标，只影响这一个任务）；设置页「网络与账号 → 绕过 Cloudflare 拦截」也能手动常开——DESIGN §7.6 |
+| **`Unable to download webpage` 里可能裹着 HTTP 状态码** | `ERROR: [generic] …: Unable to download webpage: HTTP Error 403` 被归到「网络不可达（检查代理设置）」——站点明明答了，只是拒绝了我们。**实测踩到**，那句提示把人引到完全相反的方向去查代理 | 带 4xx/5xx 时改说「站点拒绝了这次请求」并给出该做什么；Cloudflare 分支提到网络那支**之前**（特定优先）——DESIGN §7.6 |
 | **改 `tempDir` 会让续传静默失效** | 新目录里找不到旧 `.part`，yt-dlp 从头下，旧碎片永久残留（清理只扫当前根） | 还有 `.part` 时**禁用**该字段（按磁盘内容判，不按任务状态）；后端绕过时记 WARN——DESIGN §5.1 |
 | **归档文件有 BOM 时首行静默失效** | yt-dlp 用 `encoding='utf-8'` 读归档，**不认 BOM**；首行比对失败 → 该视频被重新下载。后面几行正常，所以很难发现 | 宿主读写归档都去 BOM、写回不写 BOM（DESIGN §12.1）；手工修归档别用 `Out-File -Encoding utf8` |
 | **Windows PowerShell 5.1 的 `Get-Content -Raw` 按 ANSI 读 UTF-8** | 读改写一次就把整个文件的中文变成乱码，且**不可逆** | 改文件一律用编辑工具；确要用脚本时显式 `[System.IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` |

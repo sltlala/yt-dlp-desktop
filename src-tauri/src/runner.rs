@@ -391,19 +391,19 @@ pub async fn run_download(app: AppHandle, task_id: String) {
 
     if blind_retry {
         crate::logfile::info(format!(
-            "[{task_id}] 下载遇到 Cloudflare 拦截，自动开启指纹模拟重试一次"
+            "[{task_id}] 下载被站点拦截（HTTP 403），自动开启指纹模拟重试一次"
         ));
         update(&app, &task_id, |t| {
             t.auto_impersonate = true;
             t.state = "pending".into();
             t.error = None;
             t.finished_at = None;
-            t.queue_hint = Some("遇到 Cloudflare 拦截，已开启指纹模拟重试".into());
+            t.queue_hint = Some("被站点拦截，已开启指纹模拟重试".into());
         });
         push_warning(
             &app,
             &task_id,
-            "站点有 Cloudflare 反爬拦截，已自动开启浏览器指纹模拟重试（只对这个任务有效）".to_string(),
+            "站点有反爬拦截（HTTP 403），已自动开启浏览器指纹模拟重试（只对这个任务有效）".to_string(),
         );
         let host = ytdlp_core::host_of(&url);
         app.state::<crate::scheduler::Scheduler>()
@@ -714,19 +714,37 @@ fn is_cloudflare_challenge(text: &str) -> bool {
     text.contains("Cloudflare anti-bot challenge")
 }
 
+/// 是不是「generic 提取器被 HTTP 403 挡了」。
+///
+/// yt-dlp 只在**认出**那是 Cloudflare 挑战时才给那句建议——它要求响应头有
+/// `cf-mitigated: challenge`，或者页面标题正好是 `Attention Required! | Cloudflare`。
+/// 很多站点用的是自家规则（或者 CDN 没带那个头），同样是 403 却只报一句
+/// `Unable to download webpage: HTTP Error 403`。
+///
+/// 这两种对**指纹模拟**的反应是一样的，所以自动重试的条件把两种都收进来。
+/// 实测用户遇到的正是后一种：报错里根本没有 Cloudflare 字样。
+fn is_blocked_generic_403(text: &str) -> bool {
+    text.contains("[generic]") && text.contains("HTTP Error 403")
+}
+
+/// 值不值得为它开指纹模拟再试一次。
+fn worth_impersonating(text: &str) -> bool {
+    is_cloudflare_challenge(text) || is_blocked_generic_403(text)
+}
+
 /// 这次下载失败要不要**自动**带着指纹模拟重试一次。
 ///
 /// 三个条件缺一不可：
 /// - 确实失败了（不是 canceled，也不是正常跳过）；
 /// - **还没试过**自动模拟——`already` 保证只重试一次，否则会死循环；
-/// - 失败原因就是 Cloudflare 拦截。
+/// - 失败原因是站点把我们挡了（Cloudflare 挑战，或没带标记的普通 403）。
 ///
 /// 抽成纯函数是因为这个判断错了的代价很大：漏判 = 用户继续看到那个
 /// 看不懂的 403；误判 = 每个失败都白跑一遍。
 fn should_retry_with_impersonate(state: &str, already: bool, error: Option<&str>) -> bool {
     state == "failed"
         && !already
-        && error.map(is_cloudflare_challenge).unwrap_or(false)
+        && error.map(worth_impersonating).unwrap_or(false)
 }
 
 /// 从设置里取 JS 运行时配置。///
@@ -858,12 +876,12 @@ pub async fn run_probe(app: AppHandle, task_id: String) {
     let info = match probe_once(&exe, &task_id, &url, &settings, Some(&expression)).await {
         Ok(i) => i,
         Err(first) => {
-            // ① 撞上 Cloudflare 拦截：**带着指纹模拟原地重试一次**。
+            // ① 被站点拦截（403）：**带着指纹模拟原地重试一次**。
             //    放在「退回不带 -f」之前——那种退让解决不了 403，
             //    只会把同一个失败再走一遍。
-            if first.cloudflare && !impersonate_of(&settings) {
+            if first.blocked && !impersonate_of(&settings) {
                 crate::logfile::info(format!(
-                    "[{task_id}] 探测遇到 Cloudflare 拦截，自动开启指纹模拟重试"
+                    "[{task_id}] 探测被站点拦截（HTTP 403），自动开启指纹模拟重试"
                 ));
                 let forced = settings_with_impersonate(&settings);
                 match probe_once(&exe, &task_id, &url, &forced, Some(&expression)).await {
@@ -874,7 +892,7 @@ pub async fn run_probe(app: AppHandle, task_id: String) {
                         push_warning(
                             &app,
                             &task_id,
-                            "站点有 Cloudflare 反爬拦截，已自动开启浏览器指纹模拟（只对这个任务有效）"
+                            "站点有反爬拦截（HTTP 403），已自动开启浏览器指纹模拟（只对这个任务有效）"
                                 .to_string(),
                         );
                         apply_info(&app, &task_id, &url, i);
@@ -882,7 +900,7 @@ pub async fn run_probe(app: AppHandle, task_id: String) {
                     }
                     Err(_) => {
                         crate::logfile::warn(format!(
-                            "[{task_id}] 开启指纹模拟后仍被 Cloudflare 拦截"
+                            "[{task_id}] 开启指纹模拟后仍被拦截"
                         ));
                         // 模拟也没用，继续走原来的退让逻辑
                     }
@@ -924,8 +942,9 @@ struct ProbeFailure {
     message: String,
     /// 失败原因是「所选格式不可用」——用于区分「用户的表达式有问题」和偶发故障。
     format_unavailable: bool,
-    /// 失败原因是 Cloudflare 反爬拦截——这种情况要带着指纹模拟重试。
-    cloudflare: bool,
+    /// 失败原因是站点把我们挡了（Cloudflare 挑战，或没带标记的普通 403）——
+    /// 这两种都值得带着指纹模拟重试一次。
+    blocked: bool,
 }
 
 /// 跑一次探测。`format` 为 `Some` 时会带上 `-f`，从而拿到预估大小。
@@ -962,7 +981,7 @@ async fn probe_once(
             ytdlp_core::parse_info_json(&json).map_err(|e| ProbeFailure {
                 message: format!("探测结果解析失败：{e}"),
                 format_unavailable: false,
-                cloudflare: false,
+                blocked: false,
             })
         }
         Ok(o) => {
@@ -970,13 +989,13 @@ async fn probe_once(
             Err(ProbeFailure {
                 message: classify_error(&raw, o.status.code()),
                 format_unavailable: raw.contains("Requested format is not available"),
-                cloudflare: is_cloudflare_challenge(&raw),
+                blocked: worth_impersonating(&raw),
             })
         }
         Err(e) => Err(ProbeFailure {
             message: format!("无法启动 yt-dlp：{e}"),
             format_unavailable: false,
-            cloudflare: false,
+            blocked: false,
         }),
     }
 }
@@ -1039,7 +1058,31 @@ fn classify_error(stderr: &str, code: Option<i32>) -> String {
     {
         return format!("需要登录或会员权限：{}", l.trim());
     }
+    // 站点拒绝了我们。**必须排在「网络不可达」之前**：那句
+    // `Unable to download webpage` 里经常裹着 HTTP 状态码，
+    // 而「站点答了、只是不肯给」和「根本连不上」是两件完全不同的事。
+    if let Some(l) = pick("Cloudflare anti-bot challenge") {
+        return format!(
+            "这个站点有 Cloudflare 反爬拦截（HTTP 403）。\n\
+             已经自动带着浏览器指纹重试过一次了；还是不行的话，换一个代理出口 IP，\
+             或者到「设置 → 网络与账号」配上 cookie 再试。\n\
+             原始信息：{}",
+            l.trim()
+        );
+    }
     if let Some(l) = pick("Unable to download webpage").or_else(|| pick("Failed to resolve")) {
+        // ⚠️ 实测踩到：`ERROR: [generic] …: Unable to download webpage: HTTP Error 403`
+        // 被判成「网络不可达（检查代理设置）」——站点明明答了，只是拒绝了我们，
+        // 这句提示会把人引到完全相反的方向去查代理。
+        if l.contains("HTTP Error 4") || l.contains("HTTP Error 5") {
+            return format!(
+                "站点拒绝了这次请求（HTTP 错误，不是网络不通）。\n\
+                 403 / 451 常见于反爬或地区限制：可以到「设置 → 网络与账号」\
+                 打开「绕过 Cloudflare 拦截」再试，或者换一个代理出口 IP。\n\
+                 原始信息：{}",
+                l.trim()
+            );
+        }
         return format!("网络不可达（检查代理设置）：{}", l.trim());
     }
     // YouTube 对「可疑请求」的两种降级响应。
@@ -1066,14 +1109,6 @@ fn classify_error(stderr: &str, code: Option<i32>) -> String {
     }
     // 站点用了 Cloudflare 反爬：yt-dlp 自己给出的解法是开指纹模拟，
     // 但那是个命令行参数，界面用户够不着——所以这里直接指到那个开关上。
-    if let Some(l) = pick("Cloudflare anti-bot challenge") {
-        return format!(
-            "这个站点有 Cloudflare 反爬拦截（HTTP 403）。\n\
-             解法：打开「设置 → 网络与账号 → 绕过 Cloudflare 拦截」再试一次。\n\
-             {}",
-            l.trim()
-        );
-    }
     if let Some(l) = pick("Unsupported URL") {
         return format!("不支持的链接：{}", l.trim());
     }
@@ -1149,8 +1184,7 @@ mod tests {
     /// 认 Cloudflare 拦截靠的是 yt-dlp 自己那句话——**分类前后的文本都要认**：
     /// 探测走 `classify_error`（中文多行），下载走到的是原始 ERROR 行。
     #[test]
-    fn cloudflare_challenge_is_recognized_in_both_forms() {
-        // 原始形式
+    fn cloudflare_challenge_is_recognized_in_both_forms() {        // 原始形式
         assert!(is_cloudflare_challenge(
             "ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge; \
              try again with --extractor-args \"generic:impersonate\""
@@ -1165,6 +1199,51 @@ mod tests {
         // 别的 403 不能误判
         assert!(!is_cloudflare_challenge("ERROR: HTTP Error 403: Forbidden"));
         assert!(!is_cloudflare_challenge("ERROR: Unable to download webpage"));
+    }
+
+    /// ⚠️ 实测踩到的误判：`Unable to download webpage` 里裹着 HTTP 状态码时，
+    /// 那**不是**网络不通——站点答了，只是拒绝了我们。说成「网络不可达（检查代理设置）」
+    /// 会把人引到完全相反的方向去查代理。
+    #[test]
+    fn http_error_is_not_reported_as_unreachable() {
+        let real = "ERROR: [generic] watch?v=407946: Unable to download webpage: \
+                    HTTP Error 403: Forbidden";
+        let msg = classify_error(real, Some(1));
+        assert!(!msg.contains("网络不可达"), "403 不该说成网络不可达：{msg}");
+        assert!(msg.contains("拒绝了这次请求"), "实际: {msg}");
+
+        // 真的连不上时仍然要说「检查代理设置」
+        let dead = "ERROR: Unable to download webpage: <urlopen error [Errno 111] Connection refused>";
+        let msg = classify_error(dead, Some(1));
+        assert!(msg.contains("网络不可达"), "实际: {msg}");
+    }
+
+    /// Cloudflare 那句话里也含 `Unable to download webpage` 之外的形式，
+    /// 但**必须优先于**网络那一支——否则会被抢答成「网络不可达」。
+    #[test]
+    fn cloudflare_takes_priority_over_unreachable() {
+        let both = "ERROR: Unable to download webpage: HTTP Error 403: Forbidden\n\
+                    ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge";
+        let msg = classify_error(both, Some(1));
+        assert!(msg.contains("Cloudflare 反爬拦截"), "实际: {msg}");
+        assert!(!msg.contains("网络不可达"));
+    }
+
+    /// 没带 Cloudflare 标记、但确实是 generic 提取器被 403 挡了——
+    /// **用户遇到的正是这一种**（报错里根本没有 Cloudflare 字样）。
+    /// 这种也值得开指纹模拟试一次。
+    #[test]
+    fn unmarked_generic_403_also_worth_impersonating() {
+        let real = "ERROR: [generic] watch?v=407946: Unable to download webpage: \
+                    HTTP Error 403: Forbidden";
+        assert!(is_blocked_generic_403(real));
+        assert!(worth_impersonating(real));
+
+        // 但**非 generic** 的 403 不碰：那是别的提取器的事，模拟帮不上
+        assert!(!is_blocked_generic_403("ERROR: [youtube] x: HTTP Error 403: Forbidden"));
+        assert!(!worth_impersonating("ERROR: [youtube] x: HTTP Error 403: Forbidden"));
+        // 404 之类的也不是反爬
+        assert!(!is_blocked_generic_403("ERROR: [generic] x: HTTP Error 404: Not Found"));
     }
 
     /// 自动重试的三个条件，逐个钉住。

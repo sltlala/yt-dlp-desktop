@@ -74,11 +74,6 @@ const rows = computed(() => {
       v: t.value.usedAria2c ? 'aria2c 自身输出（精度略低）' : 'yt-dlp',
       hint: t.value.usedAria2c ? '用 aria2c 时 yt-dlp 不上报进度' : undefined,
     },
-    {
-      k: '可用字幕',
-      v: t.value.subtitleLangs?.length ? t.value.subtitleLangs.join(', ') : '—',
-    },
-    { k: '选集', v: t.value.playlistItems ?? '—', mono: true },
     { k: '添加时间', v: fmtTime(t.value.addedAt) },
     { k: '完成时间', v: fmtTime(t.value.finishedAt) },
   ]
