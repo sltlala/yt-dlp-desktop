@@ -61,12 +61,13 @@ const rows = computed(() => {
     {
       k: '预估大小',
       v: t.value.sizeEstimate ? fmtBytes(t.value.sizeEstimate) : '—',
-      hint: '估算值；合并音视频轨、嵌入字幕后成品通常更大',
+      hint: '估算值；合并、嵌入后成品通常更大',
     },
     {
       k: '实际大小',
       v: t.value.sizeActual ? fmtBytes(t.value.sizeActual) : '—',
-      hint: t.value.sizeActual ? '成品文件的实际大小' : '下载完成后才有',
+      // 有值时不再补一句「成品文件的实际大小」——标题已经说了，纯重复
+      hint: t.value.sizeActual ? undefined : '下载完成后才有',
     },
     {
       k: '进度来源',
