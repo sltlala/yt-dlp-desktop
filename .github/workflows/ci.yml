@@ -35,3 +35,49 @@ jobs:
 
       - name: 前端类型检查
         run: npm run typecheck
+
+  # 每次提交都打一份 Windows 安装包，挂在这次运行的 Artifacts 里，
+  # 用来直接试最新提交，不必等发版。
+  #
+  # 与 release.yml 的区别：那边是 tag 触发的**发布**（建 Release、传安装包），
+  # 这边只是构建产物，90 天后自动过期，不会污染 Releases 列表。
+  package:
+    runs-on: windows-latest
+    # 测试不过就不打包——产出物是要装到机器上跑的，别从坏代码里出包
+    needs: check
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # 必须缓存：rusqlite 的 bundled 特性要从源码编译 SQLite，
+      # 没有缓存每次都要多花好几分钟
+      - name: 缓存 Rust 构建产物
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      # 前端不用单独构建：tauri.conf.json 的 beforeBuildCommand 就是 npm run build
+      - name: 构建安装包
+        run: npm run tauri:build
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          # 带上 commit，下载列表里一眼能看出是哪个提交
+          name: yt-dlp-desktop-${{ github.sha }}
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          # 路径写错时**直接失败**，别静默传个空包上去
+          if-no-files-found: error
+          retention-days: 90

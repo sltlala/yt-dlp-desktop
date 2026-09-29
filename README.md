@@ -144,6 +144,24 @@ unhandled rejection——表现是「**粘贴链接后添加任务毫无反应**
 
 ## 打包与发布
 
+### 每次提交都会打一份（拿来试最新提交）
+
+`.github/workflows/ci.yml` 里有第二个 job `package`：**每次推送都构建一份
+Windows 安装包**，挂在这次运行的 **Artifacts** 里（保留 90 天）。
+
+到 **Actions → 点某次运行 → 页面底部 Artifacts** 下载，文件名是
+`yt-dlp-desktop-<完整 commit sha>`，解压就是 `*-setup.exe`。
+
+几点约定：
+
+- **要等 `check` job 通过**：测试或类型检查不过就不打包——产出物是要装到机器上跑的，
+  不从坏代码出包。有时一次跑里只看到 `check` 红、`package` 被跳过，就是这个原因。
+- 它只产出**构建产物**，不建 Release、不占用 Releases 列表；正式发版仍走 tag。
+- 每次都要完整编译一遍 Rust（含 rusqlite 的 bundled SQLite），靠
+  `swatinem/rust-cache` 缓存 `target/`，冷启动十几分钟、有缓存快得多。
+
+### 正式发版
+
 **打一个 `v*` 的 tag 就会自动出 Release**（`.github/workflows/release.yml`）：
 
 ```bash
