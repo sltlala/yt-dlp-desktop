@@ -156,132 +156,142 @@ const effectiveExpr = computed(() =>
 </script>
 
 <template>
-  <div class="mask" @click.self="emit('close')">
-    <div class="modal">
-      <header>
-        <h2>选择下载格式</h2>
-        <button class="btn ghost sm" @click="emit('close')">✕</button>
-      </header>
+  <!--
+    ⚠️ **必须 Teleport 到 body**，不能就地渲染。
+    这个弹层用的是 `position: fixed`，而任务行的 `.vitem` 上有
+    `transform`（虚拟滚动用它做位移）——**带 transform 的祖先会成为
+    fixed 的包含块**。于是 `inset: 0` 变成「铺满那一行」而不是铺满窗口：
+    弹窗按**行**居中，一长就顶到视口外面，底下的按钮点不到（用户报的就是这个）。
+    Teleport 出去，包含块重新变回视口。
+  -->
+  <Teleport to="body">
+    <div class="mask" @click.self="emit('close')">
+      <div class="modal">
+        <header>
+          <h2>选择下载格式</h2>
+          <button class="btn ghost sm" @click="emit('close')">✕</button>
+        </header>
 
-      <div class="tabs">
-        <button :class="{ on: mode === 'preset' }" @click="mode = 'preset'">预设</button>
-        <button :class="{ on: mode === 'advanced' }" @click="mode = 'advanced'">
-          高级（完整格式表）
-        </button>
-      </div>
-
-      <div class="body">
-        <!-- ── 预设 ── -->
-        <div v-if="mode === 'preset'" class="presets">
-          <button
-            v-for="p in presets"
-            :key="p.label"
-            class="preset"
-            :class="{ on: expression === p.expr }"
-            @click="emit('apply', p.expr)"
-          >
-            <div class="p-label">{{ p.label }}</div>
-            <div class="p-note">{{ p.note }}</div>
-            <code class="mono">{{ p.expr }}</code>
+        <div class="tabs">
+          <button :class="{ on: mode === 'preset' }" @click="mode = 'preset'">预设</button>
+          <button :class="{ on: mode === 'advanced' }" @click="mode = 'advanced'">
+            高级（完整格式表）
           </button>
         </div>
 
-        <!-- ── 高级 ── -->
-        <div v-else-if="loading" class="loading">正在读取格式列表…</div>
-        <div v-else-if="formats.length === 0" class="loading">
-          没有可用的格式信息（探测可能失败或该链接不支持）
-        </div>
-        <template v-else>
-          <!--
-            这个提示是必须的：DASH 站点把音视频分开列，用户看到两列里各有一半是
-            「—」会直接懵住（「这样怎么选择」）。
-          -->
-          <p class="kind-note">
-            这个站点的视频轨和音频轨是<strong>分开</strong>的，所以列表里既有「仅视频」
-            也有「仅音频」。<strong>选「仅视频」那一行就行</strong>——会自动配上一条最佳
-            音频轨（<code class="mono">+ba</code>），不用自己再挑一遍。
-          </p>
-
-          <table class="fmt">
-            <thead>
-              <tr>
-                <th></th>
-                <th>ID</th>
-                <th>类型</th>
-                <th>容器</th>
-                <th>分辨率</th>
-                <th>帧率</th>
-                <th>编码</th>
-                <th class="r">大小</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="f in sorted"
-                :key="f.formatId"
-                :class="[kindOf(f), { on: picked === f.formatId }]"
-                :title="KIND_HINT[kindOf(f)]"
-                @click="picked = f.formatId"
-              >
-                <td><input type="radio" :checked="picked === f.formatId" /></td>
-                <td class="mono">{{ f.formatId }}</td>
-                <td>
-                  <span class="kind" :class="kindOf(f)">{{ KIND_LABEL[kindOf(f)] }}</span>
-                </td>
-                <td>{{ f.ext }}</td>
-                <td>{{ f.resolution }}</td>
-                <td>{{ f.fps ?? '—' }}</td>
-                <td class="mono dim">
-                  {{ has(f.vcodec) ? f.vcodec : f.acodec }}
-                </td>
-                <td class="r">{{ fmtBytes(f.filesize) }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </template>
-      </div>
-
-      <footer>
-        <div class="expr">
-          <span class="lbl">将保存为表达式</span>
-          <code class="mono">{{ effectiveExpr || '请选择一行' }}</code>
-          <!-- 选了仅视频轨时，明确告诉用户音频从哪来 -->
-          <span v-if="mode === 'advanced' && pickedFormat && kindOf(pickedFormat) === 'video'" class="pair">
-            自动搭配最佳音频轨<template v-if="bestAudio">
-              （{{ bestAudio.formatId }} · {{ bestAudio.ext }} ·
-              {{ bestAudio.tbr ? Math.round(bestAudio.tbr) + 'k' : '—' }}）</template
+        <div class="body">
+          <!-- ── 预设 ── -->
+          <div v-if="mode === 'preset'" class="presets">
+            <button
+              v-for="p in presets"
+              :key="p.label"
+              class="preset"
+              :class="{ on: expression === p.expr }"
+              @click="emit('apply', p.expr)"
             >
-          </span>
-        </div>
-        <button class="btn" @click="emit('close')">取消</button>
-        <button
-          v-if="overridden"
-          class="btn"
-          title="改回跟随「设置 → 格式」里的预设"
-          @click="emit('apply', '')"
-        >
-          恢复默认
-        </button>
-        <button
-          class="btn primary"
-          :disabled="!effectiveExpr"
-          :title="
-            mode === 'advanced' && derived
-              ? '按新格式重新下载这个任务'
-              : '按这个预设重新下载这个任务'
-          "
-          @click="emit('apply', effectiveExpr)"
-        >
-          按此格式重新下载
-        </button>
-      </footer>
+              <div class="p-label">{{ p.label }}</div>
+              <div class="p-note">{{ p.note }}</div>
+              <code class="mono">{{ p.expr }}</code>
+            </button>
+          </div>
 
-      <p class="foot-note">
-        保存的是 <code>-f</code> 表达式本身，而不是 format_id 列表——这样任务永远可以重放，
-        也不需要在数据库里保存 info.json。
-      </p>
-    </div>
-  </div>
+          <!-- ── 高级 ── -->
+          <div v-else-if="loading" class="loading">正在读取格式列表…</div>
+          <div v-else-if="formats.length === 0" class="loading">
+            没有可用的格式信息（探测可能失败或该链接不支持）
+          </div>
+          <template v-else>
+            <!--
+              这个提示是必须的：DASH 站点把音视频分开列，用户看到两列里各有一半是
+              「—」会直接懵住（「这样怎么选择」）。
+            -->
+            <p class="kind-note">
+              这个站点的视频轨和音频轨是<strong>分开</strong>的，所以列表里既有「仅视频」
+              也有「仅音频」。<strong>选「仅视频」那一行就行</strong>——会自动配上一条最佳
+              音频轨（<code class="mono">+ba</code>），不用自己再挑一遍。
+            </p>
+
+            <table class="fmt">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>ID</th>
+                  <th>类型</th>
+                  <th>容器</th>
+                  <th>分辨率</th>
+                  <th>帧率</th>
+                  <th>编码</th>
+                  <th class="r">大小</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="f in sorted"
+                  :key="f.formatId"
+                  :class="[kindOf(f), { on: picked === f.formatId }]"
+                  :title="KIND_HINT[kindOf(f)]"
+                  @click="picked = f.formatId"
+                >
+                  <td><input type="radio" :checked="picked === f.formatId" /></td>
+                  <td class="mono">{{ f.formatId }}</td>
+                  <td>
+                    <span class="kind" :class="kindOf(f)">{{ KIND_LABEL[kindOf(f)] }}</span>
+                  </td>
+                  <td>{{ f.ext }}</td>
+                  <td>{{ f.resolution }}</td>
+                  <td>{{ f.fps ?? '—' }}</td>
+                  <td class="mono dim">
+                    {{ has(f.vcodec) ? f.vcodec : f.acodec }}
+                  </td>
+                  <td class="r">{{ fmtBytes(f.filesize) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
+        </div>
+
+        <footer>
+          <div class="expr">
+            <span class="lbl">将保存为表达式</span>
+            <code class="mono">{{ effectiveExpr || '请选择一行' }}</code>
+            <!-- 选了仅视频轨时，明确告诉用户音频从哪来 -->
+            <span v-if="mode === 'advanced' && pickedFormat && kindOf(pickedFormat) === 'video'" class="pair">
+              自动搭配最佳音频轨<template v-if="bestAudio">
+                （{{ bestAudio.formatId }} · {{ bestAudio.ext }} ·
+                {{ bestAudio.tbr ? Math.round(bestAudio.tbr) + 'k' : '—' }}）</template
+              >
+            </span>
+          </div>
+          <button class="btn" @click="emit('close')">取消</button>
+          <button
+            v-if="overridden"
+            class="btn"
+            title="改回跟随「设置 → 格式」里的预设"
+            @click="emit('apply', '')"
+          >
+            恢复默认
+          </button>
+          <button
+            class="btn primary"
+            :disabled="!effectiveExpr"
+            :title="
+              mode === 'advanced' && derived
+                ? '按新格式重新下载这个任务'
+                : '按这个预设重新下载这个任务'
+            "
+            @click="emit('apply', effectiveExpr)"
+          >
+            按此格式重新下载
+          </button>
+        </footer>
+
+        <p class="foot-note">
+          保存的是 <code>-f</code> 表达式本身，而不是 format_id 列表——这样任务永远可以重放，
+          也不需要在数据库里保存 info.json。
+        </p>
+        </div>
+      </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -349,6 +359,17 @@ header h2 {
 
 .body {
   flex: 1;
+  /**
+   * ⚠️ `min-height: 0` 是必须的，不是可有可无的保险。
+   *
+   * flex 子项的默认 `min-height` 是 `auto`——意思是「不许缩到比内容还矮」。
+   * 于是格式表一长，`.body` 就撑到比 `.modal` 的 `max-height: 88vh` 还高，
+   * 把 `footer`（「按此格式重新下载」那几个按钮）挤到可视区外；
+   * 而 `.modal` 是 `overflow: hidden`，**被裁掉的部分滚不到、点不着**。
+   *
+   * 实测用户遇到的就是这个：高级格式表太长 → 底下的按钮点不到。
+   */
+  min-height: 0;
   overflow: auto;
   padding: 14px 18px;
 }

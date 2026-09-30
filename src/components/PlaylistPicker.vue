@@ -68,52 +68,57 @@ async function confirm() {
 </script>
 
 <template>
-  <div class="mask" @click.self="emit('close')">
-    <div class="modal">
-      <header>
-        <div>
-          <h2>选择要下载的集数</h2>
-          <p class="sub">共 {{ entries.length }} 集 · 已选 {{ selected.size }} 集 · 合计约 {{ fmtDuration(totalDuration) }}</p>
+  <!-- ⚠️ 必须 Teleport 到 body：任务行 `.vitem` 上有 transform（虚拟滚动），
+       带 transform 的祖先会成为 `position: fixed` 的包含块，弹层就只铺满那一行、
+       按行居中，一长就顶出视口、按钮点不到。详见 FormatPicker.vue 的说明。 -->
+  <Teleport to="body">
+    <div class="mask" @click.self="emit('close')">
+      <div class="modal">
+        <header>
+          <div>
+            <h2>选择要下载的集数</h2>
+            <p class="sub">共 {{ entries.length }} 集 · 已选 {{ selected.size }} 集 · 合计约 {{ fmtDuration(totalDuration) }}</p>
+          </div>
+          <button class="btn ghost sm" @click="emit('close')">✕</button>
+        </header>
+
+        <div class="toolbar">
+          <input v-model="filter" class="search" type="search" placeholder="筛选标题…" />
+          <button class="btn sm" @click="selectAll">全选</button>
+          <button class="btn sm" @click="selectNone">全不选</button>
+          <button class="btn sm" @click="invert">反选</button>
+          <span class="spacer" />
+          <input v-model.number="firstN" class="num" type="number" min="1" placeholder="N" />
+          <button class="btn sm" @click="applyFirstN">只选前 N 集</button>
         </div>
-        <button class="btn ghost sm" @click="emit('close')">✕</button>
-      </header>
 
-      <div class="toolbar">
-        <input v-model="filter" class="search" type="search" placeholder="筛选标题…" />
-        <button class="btn sm" @click="selectAll">全选</button>
-        <button class="btn sm" @click="selectNone">全不选</button>
-        <button class="btn sm" @click="invert">反选</button>
-        <span class="spacer" />
-        <input v-model.number="firstN" class="num" type="number" min="1" placeholder="N" />
-        <button class="btn sm" @click="applyFirstN">只选前 N 集</button>
+        <div class="list">
+          <label
+            v-for="{ e, i } in shown"
+            :key="i"
+            class="item"
+            :class="{ on: selected.has(i) }"
+          >
+            <input type="checkbox" :checked="selected.has(i)" @change="toggle(i)" />
+            <span class="idx">{{ i + 1 }}</span>
+            <span class="title" :title="e.title">{{ e.title }}</span>
+            <span class="dur">{{ e.duration ? fmtDuration(e.duration) : '—' }}</span>
+          </label>
+          <div v-if="shown.length === 0" class="none">没有匹配的条目</div>
+        </div>
+
+        <footer>
+          <span class="hint">
+            选集通过 <code>--playlist-items</code> 交给 yt-dlp，不会为每集单独建任务
+          </span>
+          <button class="btn" @click="emit('close')">取消</button>
+          <button class="btn primary" :disabled="selected.size === 0 || busy" @click="confirm">
+            开始下载{{ allSelected ? '全部' : `（${selected.size} 集）` }}
+          </button>
+        </footer>
       </div>
-
-      <div class="list">
-        <label
-          v-for="{ e, i } in shown"
-          :key="i"
-          class="item"
-          :class="{ on: selected.has(i) }"
-        >
-          <input type="checkbox" :checked="selected.has(i)" @change="toggle(i)" />
-          <span class="idx">{{ i + 1 }}</span>
-          <span class="title" :title="e.title">{{ e.title }}</span>
-          <span class="dur">{{ e.duration ? fmtDuration(e.duration) : '—' }}</span>
-        </label>
-        <div v-if="shown.length === 0" class="none">没有匹配的条目</div>
-      </div>
-
-      <footer>
-        <span class="hint">
-          选集通过 <code>--playlist-items</code> 交给 yt-dlp，不会为每集单独建任务
-        </span>
-        <button class="btn" @click="emit('close')">取消</button>
-        <button class="btn primary" :disabled="selected.size === 0 || busy" @click="confirm">
-          开始下载{{ allSelected ? '全部' : `（${selected.size} 集）` }}
-        </button>
-      </footer>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>
