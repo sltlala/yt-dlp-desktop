@@ -1662,6 +1662,19 @@ mp4 的脆弱点（源码注释自承）：
 所以预估值**可能整块缺失**（界面显示「—」），这是正常的，不是 bug。
 界面一律写「预估」并说明成品通常会更大（DESIGN §15 开头那张表就是给用户看的）。
 
+### 15.5 ⚠️ 缩略图 URL 必须升级成 `https://`
+
+**事故现场**：任务列表里 YouTube 的缩略图都在，B站那条却一片空白（只有 🎬 占位）。
+
+**根因**（实测）：页面跑在 Tauri 的**安全 origin** 上（`tauri://localhost` /
+`http://tauri.localhost`），WebView2 把明文 `http://` 图片当成**混合内容**拦截。
+yt-dlp 给 B站的是 `http://i1.hdslb.com/bfs/...`，而 YouTube 一律给 `https://`——
+所以只有 B站那张被拦。
+
+**修复**：`probe::pick_thumbnail` 拿到 URL 后统一过 `https_thumbnail`，
+把 `http://` 换成 `https://`。实测 `i1.hdslb.com` 支持 https（同一个 URL 换头
+后 200、字节数一致），所以直接换头是安全的；`data:` 内联图原样保留，不动。
+
 ---
 
 ## 16. 待定（尚未决策）

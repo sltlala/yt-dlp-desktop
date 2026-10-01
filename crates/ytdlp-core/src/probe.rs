@@ -126,15 +126,31 @@ fn as_u64(v: &Value, k: &str) -> Option<u64> {
 /// yt-dlp 有时给 `thumbnail`（单张），有时只给 `thumbnails`（数组，按从小到大排列）。
 /// 数组里取**最后一张有 url 的**——通常分辨率最高。
 fn pick_thumbnail(v: &Value) -> Option<String> {
-    if let Some(t) = as_str(v, "thumbnail") {
-        return Some(t);
+    let url = if let Some(t) = as_str(v, "thumbnail") {
+        Some(t)
+    } else {
+        let arr = v.get("thumbnails")?.as_array()?;
+        arr.iter()
+            .rev()
+            .find_map(|t| as_str(t, "url"))
+            // 数组里也可能带 `data:` 内联缩略图
+            .or_else(|| arr.iter().rev().find_map(|t| as_str(t, "data")))
+    };
+    url.map(|u| https_thumbnail(u))
+}
+
+/// 把缩略图 URL 升级成 `https://`（若是 `http://`）。
+///
+/// 前端页面跑在 Tauri 的安全 origin（`tauri://localhost` / `http://tauri.localhost`）上，
+/// WebView2 会把明文 `http://` 图片当成**混合内容**拦截，于是任务列表里的缩略图一片空白。
+/// 实测 B站给的 `http://i1.hdslb.com/...` 直接换 `https://` 仍返回同一张图（200），
+/// 所以这里顺手升成 https 是最省事的修法；换不了的（`data:` 内联图）原样保留。
+fn https_thumbnail(url: String) -> String {
+    if let Some(rest) = url.strip_prefix("http://") {
+        format!("https://{rest}")
+    } else {
+        url
     }
-    let arr = v.get("thumbnails")?.as_array()?;
-    arr.iter()
-        .rev()
-        .find_map(|t| as_str(t, "url"))
-        // 数组里也可能带 `data:` 内联缩略图
-        .or_else(|| arr.iter().rev().find_map(|t| as_str(t, "data")))
 }
 
 fn parse_formats(v: &Value) -> Vec<FormatInfo> {
@@ -531,6 +547,30 @@ mod tests {
                     "thumbnails":[{"url":"https://a/small.jpg"}]}"#;
         let m = parse_info_json(j).unwrap();
         assert_eq!(m.thumbnail.as_deref(), Some("https://a/b.jpg"));
+    }
+
+    /// §15.5：`http://` 缩略图必须升成 `https://`——页面跑在安全 origin 上，
+    /// 明文 http 图片会被 WebView2 当混合内容拦截，任务列表缩略图一片空白（B站实测）。
+    #[test]
+    fn http_thumbnail_is_upgraded_to_https() {
+        assert_eq!(
+            https_thumbnail("http://i1.hdslb.com/bfs/x.jpg".into()),
+            "https://i1.hdslb.com/bfs/x.jpg"
+        );
+        assert_eq!(
+            https_thumbnail("https://i.ytimg.com/vi/x/maxresdefault.jpg".into()),
+            "https://i.ytimg.com/vi/x/maxresdefault.jpg"
+        );
+        // 内联 data: 原样保留，不能被误改
+        assert_eq!(
+            https_thumbnail("data:image/png;base64,AAA".into()),
+            "data:image/png;base64,AAA"
+        );
+
+        // 走 parse 全链路：单个 http thumbnail 最终也变成 https
+        let j = r#"{"id":"x","thumbnail":"http://i1.hdslb.com/bfs/56315.jpg"}"#;
+        let m = parse_info_json(j).unwrap();
+        assert_eq!(m.thumbnail.as_deref(), Some("https://i1.hdslb.com/bfs/56315.jpg"));
     }
 
     /// 条目含 entries 数组但 _type 不是 playlist，也应判定为播放列表。
