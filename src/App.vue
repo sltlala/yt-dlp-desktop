@@ -325,6 +325,18 @@ function reload() {
             <span v-if="store.counts.failed" class="err">失败 {{ store.counts.failed }}</span>
           </div>
         </footer>
+
+        <!-- 悬浮刷新：右下角，不随列表滚动，重拉详情/进度并强制重下缩略图 -->
+        <button
+          class="fab-refresh"
+          :class="{ spinning: store.refreshing }"
+          :disabled="store.refreshing"
+          title="刷新任务详情、进度与缩略图"
+          @click="store.refresh()"
+        >
+          <span class="fab-ic" aria-hidden="true">⟳</span>
+          <span class="fab-label">刷新</span>
+        </button>
       </template>
     </main>
   </div>
@@ -665,5 +677,57 @@ function reload() {
 }
 .err {
   color: var(--err);
+}
+
+/* ── 悬浮刷新按钮 ──
+ *
+ * fixed 定位，锚在右下角、状态栏上方。任务列表在 `.list-wrap` 里滚动，
+ * 这个按钮不在其中，所以始终可见。加一层投影与描边，避免和列表内容糊在一起。
+ */
+.fab-refresh {
+  position: fixed;
+  right: 22px;
+  bottom: 56px;
+  z-index: 2000;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: var(--fs-md);
+  box-shadow: 0 6px 20px rgba(61, 110, 245, 0.38);
+  transition: background 0.13s, transform 0.13s, box-shadow 0.13s;
+}
+.fab-refresh:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(61, 110, 245, 0.45);
+}
+.fab-refresh:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 4px 14px rgba(61, 110, 245, 0.34);
+}
+.fab-refresh:disabled {
+  opacity: 0.75;
+  cursor: progress;
+}
+.fab-ic {
+  display: inline-block;
+  font-size: var(--fs-lg);
+  line-height: 1;
+}
+/* 刷新中图标旋转，转起来就是「正在做事」的反馈 */
+.fab-refresh.spinning .fab-ic {
+  animation: fab-spin 0.9s linear infinite;
+}
+@keyframes fab-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

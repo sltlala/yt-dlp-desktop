@@ -28,6 +28,16 @@ export const useTaskStore = defineStore('tasks', {
     polling: false,
     /** 调度器队列快照（探测中 / 排队中）。 */
     stats: null as SchedulerStats | null,
+    /**
+     * 缩略图缓存版本号：每次手动刷新自增一次，喂给 `<img>` 的 cache-bust 查询串。
+     *
+     * WebView2 会缓存图片（`EBWebView\Default\Cache`）。修过缩略图 bug 之后，
+     * 旧的空白/403 结果可能还在缓存里——光靠事件刷新 URL 不变，浏览器不会重下，
+     * 必须换 URL 才能强制重取。
+     */
+    thumbVersion: 0,
+    /** 手动刷新进行中——悬浮按钮据此转圈并防抖。 */
+    refreshing: false,
   }),
 
   getters: {
@@ -245,6 +255,31 @@ export const useTaskStore = defineStore('tasks', {
         this.stats = await api.schedulerStats()
       } catch {
         /* 状态栏是辅助信息，失败不打扰用户 */
+      }
+    },
+
+    /**
+     * 手动刷新：重新拉取任务全量快照（详情、进度、缩略图 URL），并推进
+     * 缩略图缓存版本，强制浏览器重下可能已过期的图片。
+     *
+     * 与 `init` 不同——`init` 只在事件通道失效时降级轮询；这里是用户主动
+     * 「我要现在看到最新状态」，所以无条件全量拉一次，失败要显式报出来。
+     */
+    async refresh() {
+      if (this.refreshing) return
+      this.refreshing = true
+      this.lastError = null
+      try {
+        this.tasks = await api.listTasks()
+        this.settings = await api.getSettings()
+        // 推进版本号，让 <img> 的 cache-bust 查询串变化 → 浏览器重取缩略图
+        this.thumbVersion++
+        await this.refreshStats()
+      } catch (e) {
+        console.error('[refresh] 失败', e)
+        this.lastError = `刷新失败：${String(e)}`
+      } finally {
+        this.refreshing = false
       }
     },
 

@@ -144,3 +144,19 @@ export function basename(p: string): string {
   const parts = p.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? p
 }
+
+/**
+ * 给缩略图 URL 追加 cache-bust 查询串，强制 WebView2 重下。
+ *
+ * WebView2（Chromium）会按 URL 缓存图片；缩略图 bug 修掉后，旧的空白/403
+ * 结果可能还躺在 `EBWebView\Default\Cache` 里。事件刷新时 URL 不变，浏览器
+ * 认为「没变」就不重取，所以必须换 URL。实测 B站 CDN 对 `?_t=…` 照常 200。
+ *
+ * ⚠️ `data:` 内联图不能加查询串，原样返回。
+ */
+export function cacheBust(url: string | null | undefined, version: number): string | null {
+  if (!url) return null
+  if (url.startsWith('data:')) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}_refresh=${version}`
+}

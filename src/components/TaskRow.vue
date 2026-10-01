@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import type { Task } from '../types'
 import { POST_PROCESS_LABEL, TASK_STATE_LABEL } from '../types'
 import { useTaskStore } from '../stores/tasks'
-import { fmtBytes, fmtDuration, fmtEta, fmtSpeed, shortenPath } from '../utils'
+import { cacheBust, fmtBytes, fmtDuration, fmtEta, fmtSpeed, shortenPath } from '../utils'
 import TaskDetail from './TaskDetail.vue'
 
 const props = defineProps<{ task: Task }>()
@@ -12,6 +12,13 @@ const store = useTaskStore()
 const t = computed(() => props.task)
 const expanded = computed(() => store.expanded === t.value.id)
 const selected = computed(() => store.selected.has(t.value.id))
+
+/**
+ * 缩略图显示 URL：套上 cache-bust，让「刷新」能强制 WebView2 重下。
+ *
+ * 否则修完缩略图 bug 后，旧空白还卡在浏览器缓存里，URL 不变就不会重取。
+ */
+const thumbSrc = computed(() => cacheBust(t.value.thumbnail, store.thumbVersion))
 
 /**
  * 进度比例。**总大小未知时返回 null** —— 界面必须切「不确定态」，
@@ -117,8 +124,8 @@ const canOpen = computed(() => !!t.value.filepath)
       <!-- 缩略图 -->
       <div class="thumb" @click="onRowClick">
         <img
-          v-if="t.thumbnail"
-          :src="t.thumbnail"
+          v-if="thumbSrc"
+          :src="thumbSrc"
           referrerpolicy="no-referrer"
           alt=""
         />
