@@ -1168,6 +1168,11 @@ fn apply_info(app: &AppHandle, task_id: &str, url: &str, info: ytdlp_core::Media
             if !info.extractor.is_empty() {
                 t.extractor = info.extractor.clone();
             }
+            // 媒体 id 与任务 id 是两回事：归档里存的是 `<提取器> <媒体id>`，
+            // 「从归档移除」要靠这个字段反查（§13.3）。
+            if !info.id.is_empty() {
+                t.video_id = Some(info.id.clone());
+            }
             t.thumbnail = info.thumbnail.clone();
             t.duration_sec = info.duration;
             t.subtitle_langs = info.subtitle_langs.clone();

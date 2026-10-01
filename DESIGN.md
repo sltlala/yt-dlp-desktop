@@ -1485,6 +1485,31 @@ exit=0                    ← 退出码 0，等同「成功」
 
 UI 文案可以承诺「可重新下载」，但前提是提示用户还需删除文件——**不能只移除归档就宣称完成**。
 
+### 13.3 ⚠️ 「从归档移除」必须按**媒体 id**匹配，不是任务 id
+
+**事故现场**：用户对一个 `skipped` 任务点「从归档移除」，重新下载仍报「已在归档中」，
+反复点也没用。
+
+**根因**（实测）：
+
+- 任务 `id` 是宿主生成的 `t-…`；归档里存的键是 `<提取器> <媒体id>`，
+  比如 `bilibili BV116a364EE1`（注意提取器是小写 `bilibili`，而 JSON 里
+  `extractor_key` 是 `BiliBili`——两者大小写不一致，别拿 extractor 字段拼键）。
+- 旧代码 `strip_archive_ids` 用**任务 id** 去 `line.contains()` 匹配归档，
+  而 `t-…` 根本不在任何归档行里 → `removed=0`，归档原封不动 → 重新下载仍跳过。
+
+**修复**：
+
+1. `Task` 新增 `video_id` 字段，探测定稿时从 `MediaInfo.id` 写入
+   （YouTube 的 `tW34TyACBIQ`、B站的 `BV116a364EE1`）。
+2. `remove_from_archive` 先把任务 id 反查成媒体 id（`archive_targets`），再删。
+   老记录没有 `videoId` 才原样退回（至少不会把 `t-…` 硬塞进匹配）。
+3. `strip_archive_ids` 改为**整 token 精确匹配**（`split_whitespace().any(|tok| id == tok)`），
+   不再子串匹配——否则 `BV116a364EE1` 会误删前缀行 `BV116a364EE11`。
+
+仍要配合 §13.2：归档移掉后，成品文件还在磁盘上时 yt-dlp 仍会跳过（`has already been
+downloaded`），所以「允许重新下载」还要走「删除文件」这一步。
+
 ---
 
 ## 14. 字幕 / 缩略图 / 元数据嵌入

@@ -570,13 +570,18 @@ fn remove_many(app: AppHandle, ids: Vec<String>) {
 /// 抽成纯函数是因为 BOM 这个坑只有单测拦得住：`read_to_string` 不去 BOM，
 /// 而 yt-dlp 读归档用的是 `encoding='utf-8'`（**同样不认 BOM**），于是归档
 /// 首行会静默失效——实测该视频会被重新下载。写回时一律不写 BOM。
+///
+/// `ids` 是**媒体 id**（归档行 `<提取器> <媒体id>` 里的后半段），按**整 token**精确匹配：
+/// 不做子串匹配，否则 `BV116a364EE1` 会误删 `BV116a364EE11` 之类的前缀行。
 fn strip_archive_ids(content: &str, ids: &[String]) -> (String, usize) {
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
     let mut removed = 0usize;
     let kept: Vec<&str> = content
         .lines()
         .filter(|line| {
-            let hit = ids.iter().any(|id| line.contains(id.as_str()));
+            let hit = line
+                .split_whitespace()
+                .any(|tok| ids.iter().any(|id| id == tok));
             if hit {
                 removed += 1;
             }
@@ -590,12 +595,34 @@ fn strip_archive_ids(content: &str, ids: &[String]) -> (String, usize) {
     (out, removed)
 }
 
+/// 任务 id → 媒体 id 的反查（供「从归档移除」用）。
+///
+/// ⚠️ 归档里存的是 `<提取器> <媒体id>`，**不是任务 id**（`t-…`）。用任务 id 去匹配
+/// 永远删不掉——实测这就是「从归档移除后重新下载仍报已在归档中」的根因。抽成纯函数
+/// 好单测；老记录没有 `videoId` 时原样退回（至少不会把 `t-…` 硬塞进匹配）。
+fn archive_targets(tasks: &[Task], ids: &[String]) -> Vec<String> {
+    ids.iter()
+        .map(|id| {
+            tasks
+                .iter()
+                .find(|t| &t.id == id)
+                .and_then(|t| t.video_id.clone())
+                .unwrap_or_else(|| id.clone())
+        })
+        .collect()
+}
+
 /// 从 download-archive 移除条目，使视频可重新下载。
 ///
 /// ⚠️ 仅此一步**不足以**重新下载：成品文件仍在磁盘时 yt-dlp 会跳过并返回 exit=0
 /// （DESIGN §13.2）。
 #[tauri::command(async)]
 fn remove_from_archive(state: State<AppState>, ids: Vec<String>) -> Result<usize, String> {
+    let targets = {
+        let tasks = state.tasks.lock().map_err(|e| e.to_string())?;
+        archive_targets(&tasks, &ids)
+    };
+
     let settings = state.settings.lock().map(|s| s.clone()).unwrap_or(Value::Null);
     let archive = settings
         .get("archivePath")
@@ -619,7 +646,7 @@ fn remove_from_archive(state: State<AppState>, ids: Vec<String>) -> Result<usize
                 continue;
             }
         };
-        let (out, removed) = strip_archive_ids(&content, &ids);
+        let (out, removed) = strip_archive_ids(&content, &targets);
         match std::fs::write(&archive, out) {
             Ok(_) => return Ok(removed),
             Err(_) => std::thread::sleep(std::time::Duration::from_millis(120)),
@@ -1349,9 +1376,12 @@ mod tests {
     }
 
     /// 归档首行的 BOM 会静默废掉那一条记录（见 `strip_archive_ids` 的注释）。
+    ///
+    /// `ids` 现在传的是**媒体 id**（归档行 `<提取器> <媒体id>` 的后半段），
+    /// 按整 token 精确匹配——这正是 §13.3 那个 bug 的修法。
     #[test]
     fn archive_removal_strips_bom_and_never_writes_one() {
-        let ids = vec!["bilibili BV1dK93BxESx".to_string()];
+        let ids = vec!["BV1dK93BxESx".to_string()];
         let (out, removed) =
             strip_archive_ids("\u{feff}bilibili BV1dK93BxESx\nyoutube tW34TyACBIQ\n", &ids);
         assert_eq!(removed, 1);
@@ -1365,5 +1395,40 @@ mod tests {
         // 删空之后不该留一个空行
         let (out, removed) = strip_archive_ids("youtube tW34TyACBIQ\n", &ids);
         assert_eq!((out.as_str(), removed), ("youtube tW34TyACBIQ\n", 0));
+    }
+
+    /// §13.3：媒体 id 是**整 token**匹配，不能是子串——否则前缀 id 会误删别的行。
+    #[test]
+    fn archive_removal_matches_whole_token_not_substring() {
+        let ids = vec!["BV116a364EE1".to_string()];
+        // 第二行的 id 是前缀关系（BV116a364EE11），不能被子串匹配误删
+        let (out, removed) = strip_archive_ids(
+            "bilibili BV116a364EE1\nyoutube BV116a364EE11\n",
+            &ids,
+        );
+        assert_eq!(removed, 1, "只删精确匹配的那一条");
+        assert_eq!(out, "youtube BV116a364EE11\n");
+    }
+
+    /// §13.3：任务 id → 媒体 id 反查。归档里没有任务 id，拿任务 id 去匹配永远删不掉。
+    #[test]
+    fn archive_targets_resolves_task_id_to_media_id() {
+        let mut a = Task::new("t-1".into(), "u".into(), ".".into(), "bv*+ba/b".into());
+        a.video_id = Some("BV116a364EE1".into());
+        let mut b = Task::new("t-2".into(), "u".into(), ".".into(), "bv*+ba/b".into());
+        b.video_id = Some("tW34TyACBIQ".into());
+        // 老记录没有 video_id → 原样退回
+        let c = Task::new("t-3".into(), "u".into(), ".".into(), "bv*+ba/b".into());
+
+        let tasks = vec![a, b, c];
+        assert_eq!(
+            archive_targets(&tasks, &["t-1".to_string(), "t-2".to_string()]),
+            vec!["BV116a364EE1".to_string(), "tW34TyACBIQ".to_string()]
+        );
+        // 未知 id 原样退回
+        assert_eq!(
+            archive_targets(&tasks, &["t-missing".to_string()]),
+            vec!["t-missing".to_string()]
+        );
     }
 }

@@ -32,6 +32,13 @@ pub struct Task {
     pub url: String,
     pub title: String,
     pub extractor: String,
+    /// 站点给这条媒体的 id（如 YouTube 的 `tW34TyACBIQ`、B站的 `BV116a364EE1`）。
+    ///
+    /// 探测定稿后写入。download-archive 里的键是 `<提取器> <媒体id>`，
+    /// 而任务的 `id` 是宿主自己生成的 `t-…`——两者**不是一回事**。从归档移除
+    /// 条目时必须靠这个字段反查，否则拿任务 id 去匹配归档永远删不掉（§13.3）。
+    #[serde(default)]
+    pub video_id: Option<String>,
     pub thumbnail: Option<String>,
     pub duration_sec: Option<f64>,
     /// `pending` / `probing` / `selecting` / `queued` / `downloading`
@@ -109,6 +116,7 @@ impl Task {
             url,
             title: String::new(),
             extractor: String::new(),
+            video_id: None,
             thumbnail: None,
             duration_sec: None,
             state: "pending".into(),
