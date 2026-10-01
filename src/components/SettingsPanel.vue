@@ -1222,6 +1222,35 @@ const templateWarning = computed(() => {
             所以遇到拦截再打开，别一直挂着。
           </p>
 
+          <h3>通知</h3>
+          <label class="check">
+            <input v-model="s.notifyOnComplete" type="checkbox" />
+            <span>下载完成时弹系统通知</span>
+          </label>
+          <label class="check">
+            <input v-model="s.notifyOnFailure" type="checkbox" />
+            <span>下载失败时弹系统通知</span>
+          </label>
+          <label class="check">
+            <input v-model="s.notifyOnSkip" type="checkbox" />
+            <span>
+              「已跳过」也通知
+              <em>跳过 = 归档命中或文件已存在，通常不是坏事，默认关</em>
+            </span>
+          </label>
+          <p class="note">
+            任务在后台排队时，切到别的窗口也能收到结果提醒。
+            通知由应用发出，无需额外的系统权限（开发模式 `tauri dev` 下可能不弹，打包安装后正常）。
+          </p>
+
+          <label class="check">
+            <input v-model="s.watchClipboard" type="checkbox" />
+            <span>
+              监听剪贴板，复制链接即提示下载
+              <em>复制一个视频链接后弹「要下载吗」气泡；默认关，避免复制别的文本时误弹</em>
+            </span>
+          </label>
+
           <h3>Cookie</h3>
           <div class="seg">
             <button :class="{ on: s.cookieMode === 'none' }" @click="s.cookieMode = 'none'">不用</button>

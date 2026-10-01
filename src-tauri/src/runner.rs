@@ -17,6 +17,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use ytdlp_core::args::{
     AudioFormat, CodecPreference, Container, CookieSource, DownloadSpec, EmbedOptions,
@@ -119,6 +120,68 @@ fn emit(app: &AppHandle, tasks: &[Task]) {
     let _ = app.emit("task://update", tasks);
 }
 
+/// 任务进入终态时弹系统通知（ROADMAP §F1）。
+///
+/// 由「设置里的三个开关」决定弹不弹：`notifyOnComplete` / `notifyOnFailure`
+/// / `notifyOnSkip`。`canceled` 一律不弹（是用户自己取消的）。
+/// 重试路径（Cloudflare 盲重试）把状态拨回 pending 后**不会**走到这里，
+/// 所以不会把「重试前那次失败」误报成「最终失败」。
+fn notify_terminal(app: &AppHandle, t: &Task) {
+    let settings = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or(Value::Null);
+    let on = |key: &str| {
+        settings
+            .get(key)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+
+    let (title, body) = match t.state.as_str() {
+        "completed" if on("notifyOnComplete") => {
+            ("下载完成".to_string(), truncate_title(&t.title))
+        }
+        "failed" if on("notifyOnFailure") => {
+            let err = t
+                .error
+                .as_deref()
+                .map(|e| truncate(e, 120))
+                .unwrap_or_else(|| "下载失败".to_string());
+            ("下载失败".to_string(), err)
+        }
+        "skipped" if on("notifyOnSkip") => {
+            ("已跳过".to_string(), truncate_title(&t.title))
+        }
+        _ => return,
+    };
+
+    let _ = app
+        .notification()
+        .builder()
+        .title(&title)
+        .body(&body)
+        .show();
+}
+
+/// 标题截断到 60 字符，避免通知正文溢出。`truncate` 按字节边界截，中文会
+/// 被切开半个字；这里按字符边界处理。
+fn truncate_title(s: &str) -> String {
+    truncate(s, 60)
+}
+
+fn truncate(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max_chars).collect();
+        out.push('…');
+        out
+    }
+}
+
 fn refresh(app: &AppHandle) {
     let state = app.state::<AppState>();
     let snap = state.snapshot();
@@ -198,7 +261,7 @@ fn prepare_aria2c(app: &AppHandle, task_id: &str, spec: &mut DownloadSpec) -> Op
 
 /// 运行一个下载任务。返回最终状态字符串。
 pub async fn run_download(app: AppHandle, task_id: String) {
-    let (url, playlist_items, format_override, auto_impersonate) = {
+    let (url, playlist_items, format_override, auto_impersonate, retry_flags) = {
         let state = app.state::<AppState>();
         let found = state.tasks.lock().ok().and_then(|t| {
             t.iter().find(|x| x.id == task_id).map(|x| {
@@ -207,6 +270,7 @@ pub async fn run_download(app: AppHandle, task_id: String) {
                     x.playlist_items.clone(),
                     x.format_override.clone(),
                     x.auto_impersonate,
+                    x.retry_flags,
                 )
             })
         });
@@ -226,6 +290,14 @@ pub async fn run_download(app: AppHandle, task_id: String) {
         // 探测阶段如果已经因为 Cloudflare 开过模拟，这里直接沿用——
         // 否则要再撞一次 403 才发现，白跑一轮。
         spec.impersonate = spec.impersonate || auto_impersonate;
+        // 自动降级重试（ROADMAP §F2）：上一轮失败后，本轮按位掩码关掉
+        // 会诱发失败的那一项。
+        if retry_flags & RETRY_NO_ARIA2C != 0 {
+            spec.aria2c = false;
+        }
+        if retry_flags & RETRY_NO_IMPERSONATE != 0 {
+            spec.impersonate = false;
+        }
         spec
     };
     let Some(exe) = paths::resolve_ytdlp() else {
@@ -391,6 +463,8 @@ pub async fn run_download(app: AppHandle, task_id: String) {
 
     // 终态记一行：出问题时，日志里这一行往往就是唯一能说明「当时怎么了」的线索。
     let mut blind_retry = false;
+    // 自动降级重试（ROADMAP §F2）：非终态时保持 None。
+    let mut degrade_retry = RetryAction::None;
     if let Ok(tasks) = app.state::<AppState>().tasks.lock() {
         if let Some(t) = tasks.iter().find(|x| x.id == task_id) {
             let detail = t
@@ -416,6 +490,19 @@ pub async fn run_download(app: AppHandle, task_id: String) {
             // 那条路会把 temp 目录、filepath.txt 这些该重置的都重置好。
             // `auto_impersonate` 这个旗标保证**只重试一次**——再失败就是真失败。
             blind_retry = should_retry_with_impersonate(&t.state, t.auto_impersonate, t.error.as_deref());
+
+            // 降级重试独立于上面的反爬重试：针对网络抖动 / aria2c 特有失败。
+            // 二者互斥——若已决定反爬重试，就不再做降级重试（一次只改一个变量，
+            // 否则分不清是哪个动作起的作用）。
+            if !blind_retry {
+                degrade_retry = should_auto_retry(
+                    &t.state,
+                    t.retry_flags,
+                    t.error.as_deref(),
+                    t.used_aria2c,
+                    spec.impersonate,
+                );
+            }
         }
     }
 
@@ -438,6 +525,43 @@ pub async fn run_download(app: AppHandle, task_id: String) {
         let host = ytdlp_core::host_of(&url);
         app.state::<crate::scheduler::Scheduler>()
             .enqueue_download(task_id.to_string(), host);
+    } else if degrade_retry != RetryAction::None {
+        // 降级重试：按动作设好位掩码与提示，重新入队。
+        let (flag, hint) = match degrade_retry {
+            RetryAction::RetrySame => (
+                RETRY_SAME,
+                "网络抖动，自动原样重试一次".to_string(),
+            ),
+            RetryAction::RetryNoAria2c => (
+                RETRY_NO_ARIA2C,
+                "aria2c 下载失败，自动改用内置下载器重试一次".to_string(),
+            ),
+            RetryAction::RetryNoImpersonate => (
+                RETRY_NO_IMPERSONATE,
+                "指纹模拟可能导致失败，自动关闭后重试一次".to_string(),
+            ),
+            RetryAction::None => unreachable!(),
+        };
+        crate::logfile::info(format!("[{task_id}] {hint}"));
+        update(&app, &task_id, |t| {
+            t.retry_flags |= flag;
+            t.state = "pending".into();
+            t.error = None;
+            t.finished_at = None;
+            t.queue_hint = Some(hint.clone());
+        });
+        push_warning(&app, &task_id, format!("{hint}（只对这个任务有效）"));
+        let host = ytdlp_core::host_of(&url);
+        app.state::<crate::scheduler::Scheduler>()
+            .enqueue_download(task_id.to_string(), host);
+    } else {
+        // 真·终态：弹系统通知（如果设置允许）。
+        // 注意 blind_retry / degrade_retry 分支会重新入队，这里不会误发「失败」通知。
+        if let Ok(tasks) = app.state::<AppState>().tasks.lock() {
+            if let Some(t) = tasks.iter().find(|x| x.id == task_id) {
+                notify_terminal(&app, t);
+            }
+        }
     }
 }
 
@@ -775,6 +899,108 @@ fn should_retry_with_impersonate(state: &str, already: bool, error: Option<&str>
     state == "failed"
         && !already
         && error.map(worth_impersonating).unwrap_or(false)
+}
+
+// ─────────── 自动降级重试（ROADMAP §F2）───────────
+//
+// 与上面的 `should_retry_with_impersonate` 是**两套**逻辑：
+// - 上面那个针对「站点 403 反爬」→ 开指纹模拟重试（已有，保留）；
+// - 下面这套针对「网络抖动 / aria2c 特有失败」→ 换更稳的配置重试。
+// 两者都靠 `retry_flags` 位掩码保证同一种动作只试一次，不会死循环。
+
+/// `retry_flags` 的位定义（见 `Task::retry_flags`）。
+const RETRY_SAME: u8 = 1;
+const RETRY_NO_ARIA2C: u8 = 2;
+const RETRY_NO_IMPERSONATE: u8 = 4;
+
+/// 自动重试要采取的降级动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryAction {
+    /// 不重试。
+    None,
+    /// 原样重试一次（针对偶发网络抖动）。
+    RetrySame,
+    /// 关掉 aria2c、退回原生下载器重试（针对 aria2c 特有失败，DESIGN §11.4）。
+    RetryNoAria2c,
+    /// 关掉指纹模拟重试（针对「模拟反而失败」）。
+    RetryNoImpersonate,
+}
+
+/// 错误文本是不是 aria2c 特有失败。
+///
+/// 实测的 B站弹幕事故文本：`libz::inflate() failed ... incorrect header check`、
+/// `ERROR: aria2c exited with code 1`（DESIGN §11.8）。这些用 aria2c 才炸，
+/// 退回原生下载器就没事。
+fn is_aria2c_error(text: &str) -> bool {
+    text.contains("aria2c")
+        || text.contains("inflate")
+        || text.contains("incorrect header check")
+        || text.contains("GZipDecodingStreamFilter")
+}
+
+/// 错误文本是不是「确定性失败」——重试也没用，不该浪费一次重试。
+///
+/// 包括：格式不可用、不支持的链接、需要登录/会员、站点 4xx 拒绝、
+/// 副本损坏。这些和「网络抖一下」是两回事。
+fn is_deterministic_error(text: &str) -> bool {
+    text.contains("Requested format is not available")
+        || text.contains("Unsupported URL")
+        || text.contains("Sign in to confirm")
+        || text.contains("Private video")
+        || text.contains("members-only")
+        || text.contains("This video is available to this channel's members")
+        || text.contains("Failed to load Python DLL")
+        || text.contains("[PYI-")
+        || text.contains("HTTP Error 4") // 403/404 等：反爬或已删除，重试无意义
+}
+
+/// 错误文本是不是「网络抖动类」——值得原样重试一次。
+fn is_transient_network_error(text: &str) -> bool {
+    text.contains("Unable to download webpage")
+        || text.contains("Failed to resolve")
+        || text.contains("timed out")
+        || text.contains("Connection")
+        || text.contains("reset by peer")
+        || text.contains("EOF")
+        || text.contains("network is unreachable")
+        || text.contains("HTTP Error 5") // 5xx 服务端临时故障
+}
+
+/// 决定这次失败要不要自动重试、以及用什么降级动作。
+///
+/// 纯函数，方便单测。规则（按优先级）：
+/// 1. 非 failed 或 error 为空 → 不重试（没信息，瞎重试没意义）；
+/// 2. 确定性错误 → 不重试；
+/// 3. aria2c 特有失败 且 这次用了 aria2c 且 还没试过关掉它 → 关 aria2c；
+/// 4. 网络抖动 且 还没试过原样重试 → 原样重试；
+/// 5. 开着指纹模拟 且 不是 4xx 且 还没试过关掉它 → 关指纹模拟；
+/// 6. 其余 → 不重试。
+fn should_auto_retry(
+    state: &str,
+    retry_flags: u8,
+    error: Option<&str>,
+    used_aria2c: bool,
+    impersonate: bool,
+) -> RetryAction {
+    if state != "failed" {
+        return RetryAction::None;
+    }
+    let Some(text) = error else {
+        return RetryAction::None;
+    };
+    if is_deterministic_error(text) {
+        return RetryAction::None;
+    }
+    if is_aria2c_error(text) && used_aria2c && retry_flags & RETRY_NO_ARIA2C == 0 {
+        return RetryAction::RetryNoAria2c;
+    }
+    if is_transient_network_error(text) && retry_flags & RETRY_SAME == 0 {
+        return RetryAction::RetrySame;
+    }
+    if impersonate && !text.contains("HTTP Error 4") && retry_flags & RETRY_NO_IMPERSONATE == 0 {
+        return RetryAction::RetryNoImpersonate;
+    }
+    RetryAction::None
 }
 
 /// 从设置里取 JS 运行时配置。///
@@ -1220,6 +1446,119 @@ pub fn cancel_task(app: &AppHandle, task_id: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ─────────── 通知正文截断（ROADMAP §F1）───────────
+
+    #[test]
+    fn truncate_respects_char_boundary() {
+        // 短于上限原样返回
+        assert_eq!(truncate("短标题", 60), "短标题");
+        // 正好等于上限，不加省略号
+        let exact = "字".repeat(60);
+        assert_eq!(truncate(&exact, 60), exact);
+        // 超长：按字符边界截断，加省略号（不会把中文切成半个字）
+        let long = "字".repeat(61);
+        let out = truncate(&long, 60);
+        assert_eq!(out.chars().count(), 61); // 60 字 + 省略号
+        assert!(out.ends_with('…'));
+    }
+
+    // ─────────── 自动降级重试（ROADMAP §F2）───────────
+
+    #[test]
+    fn auto_retry_ignores_deterministic_errors() {
+        // 格式不可用 / 不支持 / 需要登录：重试无意义
+        assert_eq!(
+            should_auto_retry("failed", 0, Some("Requested format is not available"), false, false),
+            RetryAction::None
+        );
+        assert_eq!(
+            should_auto_retry("failed", 0, Some("Unsupported URL"), false, false),
+            RetryAction::None
+        );
+        assert_eq!(
+            should_auto_retry("failed", 0, Some("Sign in to confirm you're not a bot"), false, false),
+            RetryAction::None
+        );
+        assert_eq!(
+            should_auto_retry("failed", 0, Some("HTTP Error 403: Forbidden"), false, false),
+            RetryAction::None
+        );
+    }
+
+    #[test]
+    fn auto_retry_downgrades_aria2c() {
+        // aria2c 特有失败 + 这次用了 aria2c → 关 aria2c 重试
+        assert_eq!(
+            should_auto_retry(
+                "failed",
+                0,
+                Some("GZipDecodingStreamFilter.cc:108] libz::inflate() failed"),
+                true,
+                false
+            ),
+            RetryAction::RetryNoAria2c
+        );
+        // 已试过关 aria2c → 不再重复
+        assert_eq!(
+            should_auto_retry("failed", RETRY_NO_ARIA2C, Some("aria2c exited with code 1"), true, false),
+            RetryAction::None
+        );
+        // 没用 aria2c 却报 aria2c 错 → 不归因于 aria2c（退回也没用）
+        assert_eq!(
+            should_auto_retry("failed", 0, Some("aria2c exited with code 1"), false, false),
+            RetryAction::None
+        );
+    }
+
+    #[test]
+    fn auto_retry_retries_transient_network() {
+        assert_eq!(
+            should_auto_retry("failed", 0, Some("Unable to download webpage: timed out"), false, false),
+            RetryAction::RetrySame
+        );
+        assert_eq!(
+            should_auto_retry("failed", 0, Some("Failed to resolve host"), false, false),
+            RetryAction::RetrySame
+        );
+        assert_eq!(
+            should_auto_retry("failed", 0, Some("HTTP Error 502"), false, false),
+            RetryAction::RetrySame
+        );
+        // 已原样重试过 → 不再重复
+        assert_eq!(
+            should_auto_retry("failed", RETRY_SAME, Some("Unable to download webpage"), false, false),
+            RetryAction::None
+        );
+    }
+
+    #[test]
+    fn auto_retry_skips_non_failed_and_empty() {
+        assert_eq!(should_auto_retry("completed", 0, Some("whatever"), false, false), RetryAction::None);
+        assert_eq!(should_auto_retry("failed", 0, None, false, false), RetryAction::None);
+        // 没错误信息时不瞎重试
+        assert_eq!(should_auto_retry("failed", 0, None, true, false), RetryAction::None);
+    }
+
+    #[test]
+    fn auto_retry_turns_off_impersonate() {
+        // 开着模拟、失败原因既不是网络抖动也不是 4xx → 关模拟重试
+        // （注意：不能用 "connection reset" 之类文本——那会先命中网络抖动分支）
+        assert_eq!(
+            should_auto_retry("failed", 0, Some("Unknown extractor failure"), false, true),
+            RetryAction::RetryNoImpersonate
+        );
+        // 4xx 时关模拟也没用（是站点拒绝，不是模拟导致）
+        assert_eq!(
+            should_auto_retry("failed", 0, Some("HTTP Error 429"), false, true),
+            RetryAction::None
+        );
+        // 已试过关模拟 → 不再重复
+        assert_eq!(
+            should_auto_retry("failed", RETRY_NO_IMPERSONATE, Some("Unknown extractor failure"), false, true),
+            RetryAction::None
+        );
+    }
 
     // ─────────── 成品已落地时的终态判定 ───────────
 

@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { Task } from '../types'
 import { useTaskStore } from '../stores/tasks'
+import { api } from '../ipc'
 import { ellipsizePath, fmtBytes, fmtTime, shortenPath } from '../utils'
 import FormatPicker from './FormatPicker.vue'
 import PlaylistPicker from './PlaylistPicker.vue'
@@ -17,6 +18,36 @@ const showPlaylist = ref(
 )
 
 const t = computed(() => props.task)
+
+/** 移动/重命名对话框（ROADMAP §F5）。 */
+const showRelocate = ref(false)
+const relocateDir = ref('')
+const relocateName = ref('')
+const relocateBusy = ref(false)
+
+function openRelocate() {
+  relocateDir.value = t.value.outputDir
+  relocateName.value = t.value.filepath?.split(/[\\/]/).pop() ?? ''
+  showRelocate.value = true
+}
+
+async function pickRelocateDir() {
+  const d = await api.pickFolder(relocateDir.value)
+  if (d) relocateDir.value = d
+}
+
+async function doRelocate() {
+  if (relocateBusy.value) return
+  relocateBusy.value = true
+  try {
+    const dir = relocateDir.value.trim()
+    const name = relocateName.value.trim()
+    await store.relocateFile(t.value.id, dir || null, name || null)
+    showRelocate.value = false
+  } finally {
+    relocateBusy.value = false
+  }
+}
 
 /**
  * 应用选定的 `-f` 表达式。
@@ -135,6 +166,14 @@ const rows = computed(() => {
         >
           打开所在文件夹
         </button>
+        <button
+          class="btn sm"
+          :disabled="!t.filepath"
+          title="把成品文件移动到别的目录，或改个名字"
+          @click="openRelocate"
+        >
+          移动 / 重命名
+        </button>
         <button class="btn sm" @click="showFormats = true">选择格式</button>
         <button class="btn sm" @click="store.retry(t.id)">重新下载</button>
       </div>
@@ -188,6 +227,34 @@ const rows = computed(() => {
       :entries="t.playlistEntries"
       @close="showPlaylist = false"
     />
+
+    <!-- 移动/重命名弹窗（ROADMAP §F5）。必须 Teleport 到 body：
+         详情区在 `.row` 的 overflow:hidden 里，就地渲染会被裁掉（DESIGN §9.8）。 -->
+    <Teleport to="body">
+      <div v-if="showRelocate" class="mask" @click.self="showRelocate = false">
+        <div class="relocate-card">
+          <div class="rc-title">移动 / 重命名成品文件</div>
+          <label class="rc-field">
+            <span>目标目录</span>
+            <div class="rc-row">
+              <input v-model="relocateDir" class="mono" spellcheck="false" />
+              <button class="btn sm" @click="pickRelocateDir">浏览…</button>
+            </div>
+          </label>
+          <label class="rc-field">
+            <span>文件名（留空则保留原名）</span>
+            <input v-model="relocateName" class="mono" spellcheck="false" />
+          </label>
+          <p class="rc-note">不会覆盖同名文件；目标已存在时会报错让你处理。</p>
+          <div class="rc-actions">
+            <button class="btn sm ghost" @click="showRelocate = false">取消</button>
+            <button class="btn sm primary" :disabled="relocateBusy" @click="doRelocate">
+              {{ relocateBusy ? '移动中…' : '确定移动' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -332,5 +399,60 @@ const rows = computed(() => {
   font-size: var(--fs-2xs);
   color: var(--text-mute);
   line-height: 1.45;
+}
+
+/* ── 移动/重命名弹窗（ROADMAP §F5，Teleport 到 body）── */
+.mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.28);
+  display: grid;
+  place-items: center;
+  z-index: 60;
+  backdrop-filter: blur(3px);
+}
+.relocate-card {
+  width: 460px;
+  max-width: 92vw;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rc-title {
+  font-size: var(--fs-md);
+  font-weight: 650;
+}
+.rc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: var(--fs-sm);
+  color: var(--text-mute);
+}
+.rc-row {
+  display: flex;
+  gap: 7px;
+}
+.rc-field input {
+  flex: 1;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+.rc-note {
+  margin: 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-mute);
+}
+.rc-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

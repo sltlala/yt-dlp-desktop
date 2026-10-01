@@ -55,6 +55,8 @@ export const useTaskStore = defineStore('tasks', {
     thumbVersion: 0,
     /** 手动刷新进行中——悬浮按钮据此转圈并防抖。 */
     refreshing: false,
+    /** 磁盘空间预估结果（ROADMAP §F6）。null 表示尚未检查。 */
+    diskReport: null as { freeBytes: number | null; neededBytes: number | null; warn: boolean } | null,
   }),
 
   getters: {
@@ -158,6 +160,21 @@ export const useTaskStore = defineStore('tasks', {
       }
     },
 
+    /** 批量添加，返回成功条数与失败明细（ROADMAP §F3）。 */
+    async addUrls(urls: string[]): Promise<{ added: number; failed: { url: string; reason: string }[] }> {
+      const cleaned = urls.map((u) => u.trim()).filter(Boolean)
+      if (cleaned.length === 0) return { added: 0, failed: [] }
+      try {
+        this.lastError = null
+        const res = await api.addUrls(cleaned)
+        return res
+      } catch (e) {
+        console.error('[addUrls] 失败', e)
+        this.lastError = `批量添加失败：${String(e)}`
+        return { added: 0, failed: [] }
+      }
+    },
+
     toggleSelect(id: string) {
       const s = new Set(this.selected)
       s.has(id) ? s.delete(id) : s.add(id)
@@ -220,6 +237,28 @@ export const useTaskStore = defineStore('tasks', {
     },
     async deleteFile(id: string) {
       await api.deleteFile(id)
+    },
+
+    /** 移动 / 重命名成品文件（ROADMAP §F5）。失败要显式报出。 */
+    async relocateFile(id: string, newDir: string | null, newName: string | null) {
+      try {
+        this.lastError = null
+        const p = await api.relocateFile(id, newDir, newName)
+        return p
+      } catch (e) {
+        this.lastError = `移动/重命名失败：${String(e)}`
+        return null
+      }
+    },
+
+    /** 磁盘空间预估（ROADMAP §F6）。结果存到 diskReport 供界面展示。 */
+    async checkDiskSpace() {
+      try {
+        this.diskReport = await api.diskSpaceCheck()
+      } catch (e) {
+        console.error('[diskSpaceCheck] 失败', e)
+        this.diskReport = null
+      }
     },
 
     /**

@@ -261,4 +261,8 @@ export const defaultSettings: Settings = {
   preferVcodec: '',
   preferAcodec: '',
   impersonate: false,
+  notifyOnComplete: true,
+  notifyOnFailure: true,
+  notifyOnSkip: false,
+  watchClipboard: false,
 }

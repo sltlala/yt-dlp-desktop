@@ -9,6 +9,18 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// 这些状态算「进行中」——磁盘空间预估（ROADMAP §F6）据此统计
+/// 还没落地的任务。与 `src/types.ts` 的 `ACTIVE_STATES` 保持同构。
+pub const ACTIVE_STATES: &[&str] = &[
+    "pending",
+    "probing",
+    "selecting",
+    "queued",
+    "downloading",
+    "postprocessing",
+    "paused",
+];
+
 /// 进度。`total` 为 `None` 表示总大小未知 —— 界面应切「不确定态」而非显示 0%。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,6 +119,14 @@ pub struct Task {
     /// 需要，不该顺手改掉他所有的下载。
     #[serde(default)]
     pub auto_impersonate: bool,
+    /// 自动降级重试的位掩码（ROADMAP §F2）。
+    ///
+    /// 每一位置代表一种已经试过的降级动作，避免同一动作反复重试：
+    /// - bit0 = 已原样重试过（网络抖动）
+    /// - bit1 = 已关掉 aria2c 重试过（aria2c 特有失败）
+    /// - bit2 = 已关掉指纹模拟重试过
+    #[serde(default)]
+    pub retry_flags: u8,
 }
 
 impl Task {
@@ -141,6 +161,7 @@ impl Task {
             queue_hint: None,
             used_aria2c: false,
             auto_impersonate: false,
+            retry_flags: 0,
         }
     }
 }

@@ -57,6 +57,9 @@ const tauriBackend = {
     return un
   },
   addUrl: (url: string) => invoke<Task>('add_url', { url }),
+  /** 批量添加（多行粘贴 / 拖入列表）。返回成功条数与失败明细（ROADMAP §F3）。 */
+  addUrls: (urls: string[]) =>
+    invoke<{ added: number; failed: { url: string; reason: string }[] }>('add_urls', { urls }),
   pause: (id: string) => invoke<void>('pause_task', { id }),
   resume: (id: string) => invoke<void>('resume_task', { id }),
   retry: (id: string) => invoke<void>('resume_task', { id }),
@@ -67,6 +70,14 @@ const tauriBackend = {
   removeMany: (ids: string[]) => invoke<void>('remove_many', { ids }),
   removeFromArchive: (ids: string[]) => invoke<number>('remove_from_archive', { ids }),
   deleteFile: (id: string) => invoke<void>('delete_file', { id }),
+  /** 移动 / 重命名已下载的成品文件（ROADMAP §F5）。返回新路径。 */
+  relocateFile: (id: string, newDir: string | null, newName: string | null) =>
+    invoke<string>('relocate_file', { id, newDir, newName }),
+  /** 磁盘空间预估（ROADMAP §F6）：待下载任务预估大小 vs 输出盘剩余。 */
+  diskSpaceCheck: () =>
+    invoke<{ freeBytes: number | null; neededBytes: number | null; warn: boolean }>(
+      'disk_space_check',
+    ),
   /** 用系统默认程序打开已下载的文件。文件不存在时后端会返回明确错误。 */
   openFile: (path: string) => invoke<void>('open_file', { path }),
   /** 在资源管理器中选中该文件（不打开它）。 */
@@ -313,7 +324,27 @@ class MockBackend {
     return task
   }
 
-  /** 删除范围刻意分开，不合成一个按钮（DESIGN §13）。 */
+  async addUrls(urls: string[]): Promise<{ added: number; failed: { url: string; reason: string }[] }> {
+    let added = 0
+    const failed: { url: string; reason: string }[] = []
+    const seen = new Set<string>()
+    for (const raw of urls) {
+      const url = raw.trim()
+      if (!url) continue
+      if (seen.has(url)) continue
+      seen.add(url)
+      try {
+        // mock 里宽松：能 new URL 就算有效
+        new URL(url)
+        await this.addUrl(url)
+        added++
+      } catch {
+        failed.push({ url, reason: '不是有效链接' })
+      }
+    }
+    return { added, failed }
+  }
+
   async removeRecord(id: string): Promise<void> {
     this.tasks = this.tasks.filter((t) => t.id !== id)
     this.emit()
@@ -343,6 +374,25 @@ class MockBackend {
     const t = this.tasks.find((x) => x.id === id)
     if (t) t.filepath = null
     this.emit()
+  }
+
+  async relocateFile(id: string, newDir: string | null, newName: string | null): Promise<string> {
+    const t = this.tasks.find((x) => x.id === id)
+    if (!t?.filepath) throw new Error('该任务没有已落地的文件')
+    // 演示模式只模拟路径拼接，不碰真实文件系统。
+    const old = t.filepath
+    const dir = newDir?.trim() || t.outputDir
+    const name = newName?.trim() || old.split(/[\\/]/).pop()!
+    const next = `${dir.replace(/[\\/]+$/, '')}\\${name}`
+    t.filepath = next
+    t.outputDir = dir
+    this.emit()
+    return next
+  }
+
+  async diskSpaceCheck(): Promise<{ freeBytes: number | null; neededBytes: number | null; warn: boolean }> {
+    // 演示模式给一个固定的「充足」报告，不触发警告。
+    return { freeBytes: 500_000_000_000, neededBytes: 2_000_000_000, warn: false }
   }
 
   /** 演示模式没有真实文件系统，给一个可预期的提示而不是静默成功。 */
@@ -712,6 +762,7 @@ export const api = isTauri()
   : {
       onChange: (l: Listener) => Promise.resolve(mock().onChange(l)),
       addUrl: (url: string) => mock().addUrl(url),
+      addUrls: (urls: string[]) => mock().addUrls(urls),
       pause: (id: string) => mock().pause(id),
       resume: (id: string) => mock().resume(id),
       retry: (id: string) => mock().retry(id),
@@ -720,6 +771,9 @@ export const api = isTauri()
       removeMany: (ids: string[]) => mock().removeMany(ids),
       removeFromArchive: (ids: string[]) => mock().removeFromArchive(ids),
       deleteFile: (id: string) => mock().deleteFile(id),
+      relocateFile: (id: string, newDir: string | null, newName: string | null) =>
+        mock().relocateFile(id, newDir, newName),
+      diskSpaceCheck: () => mock().diskSpaceCheck(),
       openFile: (path: string) => mock().openFile(path),
       revealFile: (path: string) => mock().revealFile(path),
       pickFolder: (initial?: string) => mock().pickFolder(initial),

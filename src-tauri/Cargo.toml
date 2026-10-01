@@ -15,6 +15,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 ytdlp-core = { path = "../crates/ytdlp-core" }
 tauri = { version = "2", features = [] }
+# 下载完成/失败的系统通知（ROADMAP §F1）。
+# 只在任务终态时从后端发一条，前端无需直接调用，所以不引 npm 包。
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "rt", "rt-multi-thread", "sync", "time"] }

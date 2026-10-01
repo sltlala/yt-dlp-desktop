@@ -6,7 +6,7 @@
 //!
 //! 只依赖 `shell32`，不引入额外的 crate。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
 mod imp {
@@ -93,6 +93,63 @@ mod imp {
         let dir = path.parent().unwrap_or(path);
         open(dir)
     }
+    pub fn disk_free_bytes(_path: &Path) -> Option<u64> {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn disk_free_bytes_win(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    // GetDiskFreeSpaceExW：返回总字节、可用字节、调用者可用字节。
+    // 用「调用者可用」这一项——磁盘配额下它才是真正能写进去的量。
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            lpDirectoryName: *const u16,
+            lpFreeBytesAvailableToCaller: *mut u64,
+            _lpTotalNumberOfBytes: *mut u64,
+            _lpTotalNumberOfFreeBytes: *mut u64,
+        ) -> i32;
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut avail = 0u64;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut avail,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        None
+    } else {
+        Some(avail)
+    }
+}
+
+/// 读某个路径所在卷的剩余可用字节。拿不到（跨平台 / 路径不存在）返回 `None`，
+/// 调用方据此「只警告、不硬拦」（ROADMAP §F6）。
+pub fn disk_free_bytes(path: &str) -> Option<u64> {
+    let p = Path::new(path);
+    #[cfg(windows)]
+    {
+        // 传目录本身；若是文件路径则取其父目录。不存在时向上找最近的已存在祖先。
+        let target: &Path = if p.is_dir() {
+            p
+        } else if let Some(parent) = p.parent() {
+            parent
+        } else {
+            p
+        };
+        return disk_free_bytes_win(target);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = p;
+        None
+    }
 }
 
 /// 用系统默认程序打开文件。
@@ -142,4 +199,22 @@ pub fn pick_file(initial: Option<&str>) -> Result<Option<String>, String> {
         }
     }
     Ok(d.pick_file().map(|p| p.display().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 只验证「能调通、不 panic」：Windows 上应拿到正数，非 Windows 上 None。
+    /// 不断言具体数值（磁盘空间随时在变，断言会偶发失败）。
+    #[test]
+    fn disk_free_bytes_does_not_panic() {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        match disk_free_bytes(&cwd.to_string_lossy()) {
+            Some(v) => assert!(v > 0, "剩余空间应为正数，实际 {v}"),
+            None => {} // 非 Windows 或 API 失败，允许
+        }
+        // 不存在的路径也应返回 None 或正常值，而不是 panic
+        let _ = disk_free_bytes("Z:\\definitely\\not\\exist");
+    }
 }

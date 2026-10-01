@@ -249,6 +249,14 @@ export interface Settings {
    * 撞上拦截时错误信息里会指到这个开关。
    */
   impersonate: boolean
+  /** 下载完成时弹系统通知（ROADMAP §F1）。 */
+  notifyOnComplete: boolean
+  /** 下载失败时弹系统通知。 */
+  notifyOnFailure: boolean
+  /** 「已跳过」也弹通知（默认不弹——跳过不是坏事）。 */
+  notifyOnSkip: boolean
+  /** 监听剪贴板：复制链接即提示「要下载吗」（ROADMAP §F4，默认关）。 */
+  watchClipboard: boolean
 }
 
 /** 一个可选的编码偏好。 */

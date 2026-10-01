@@ -46,9 +46,39 @@ pub fn host_of(url: &str) -> String {
     host.to_ascii_lowercase()
 }
 
+/// 是不是「看起来像 yt-dlp 能下的链接」。
+///
+/// 刻意宽松：yt-dlp 认的链接比浏览器 `URL` 构造函数能解析的多得多
+/// （B站短链、磁力链接、各种站内写法）。这里只排除「明显不是链接」的文本
+/// （空行、纯中文、带空格的杂句），把真正的判断交给 yt-dlp。
+///
+/// 用于批量添加时的过滤（ROADMAP §F3）与剪贴板监听（§F4）。
+pub fn is_valid_url(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return false;
+    }
+    // 磁力链接这种没有 host 的特殊写法，yt-dlp 也支持，单独放行。
+    if t.to_ascii_lowercase().starts_with("magnet:") {
+        return true;
+    }
+    host_of(t) != "unknown"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_valid_url_filters_garbage() {
+        assert!(is_valid_url("https://www.bilibili.com/video/BV1xx"));
+        assert!(is_valid_url("https://youtu.be/dQw4w9WgXcQ"));
+        assert!(is_valid_url("magnet:?xt=urn:btih:abc"));
+        assert!(!is_valid_url(""));
+        assert!(!is_valid_url("   "));
+        assert!(!is_valid_url("不是链接"));
+        assert!(!is_valid_url("随便写点什么 带空格"));
+    }
 
     #[test]
     fn extracts_common_forms() {

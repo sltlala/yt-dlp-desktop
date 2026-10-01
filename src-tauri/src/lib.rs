@@ -72,7 +72,15 @@ fn default_settings() -> Value {
         // 对 generic 提取器开启指纹模拟，过 Cloudflare 拦截。
         // **默认关**：yt-dlp 自己默认也不做（issue #11335），它的帮助文本
         // 明确警告强制模拟会拖慢速度、降低稳定性。撞上拦截时界面上会指过来。
-        "impersonate": false
+        "impersonate": false,
+        // ── 系统通知（ROADMAP §F1）──
+        // 任务进入终态时弹系统通知。skipped 是「已存在跳过」，不算坏事，默认不弹。
+        "notifyOnComplete": true,
+        "notifyOnFailure": true,
+        "notifyOnSkip": false,
+        // ── 剪贴板监听（ROADMAP §F4）──
+        // 默认关：读剪贴板是敏感操作，且容易在用户复制别的文本时误弹。
+        "watchClipboard": false
     })
 }
 
@@ -380,6 +388,66 @@ fn list_tasks(state: State<AppState>) -> Vec<Task> {
 
 #[tauri::command]
 fn add_url(app: AppHandle, url: String) -> Task {
+    add_url_inner(&app, &url).expect("add_url 单条必定成功")
+}
+
+/// 批量添加的结果（ROADMAP §F3）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchAddResult {
+    added: usize,
+    failed: Vec<BatchAddFailure>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchAddFailure {
+    url: String,
+    reason: String,
+}
+
+/// 批量添加：多行粘贴 / 拖入 URL 列表一次进队。
+///
+/// 逐条去重（按 URL 字符串），无效文本收集到 `failed` 里反馈给前端，
+/// 而不是静默丢弃——用户想知道「哪几条没认出来」。
+#[tauri::command]
+fn add_urls(app: AppHandle, urls: Vec<String>) -> BatchAddResult {
+    let mut seen = std::collections::HashSet::new();
+    let mut added = 0usize;
+    let mut failed = Vec::new();
+
+    for raw in urls {
+        let url = raw.trim();
+        if url.is_empty() {
+            continue;
+        }
+        if !ytdlp_core::is_valid_url(url) {
+            failed.push(BatchAddFailure {
+                url: url.to_string(),
+                reason: "不是有效链接".into(),
+            });
+            continue;
+        }
+        if !seen.insert(url.to_string()) {
+            continue; // 重复，静默跳过
+        }
+        match add_url_inner(&app, url) {
+            Ok(_) => added += 1,
+            Err(e) => failed.push(BatchAddFailure {
+                url: url.to_string(),
+                reason: e,
+            }),
+        }
+    }
+
+    // 批量完成后一次性广播，而不是每条各广播一次。
+    let _ = app.emit("task://update", app.state::<AppState>().snapshot());
+    BatchAddResult { added, failed }
+}
+
+/// `add_url` / `add_urls` 共用的建任务逻辑。
+/// 返回任务本体；`Err` 只在「极端情况下」出现（当前实现不会，为批量场景预留）。
+fn add_url_inner(app: &AppHandle, url: &str) -> Result<Task, String> {
     let settings = {
         let state = app.state::<AppState>();
         state.settings.lock().map(|s| s.clone()).unwrap_or_else(|_| default_settings())
@@ -392,11 +460,11 @@ fn add_url(app: AppHandle, url: String) -> Task {
         .unwrap_or_else(|| paths::app_data_root().join("downloads").to_string_lossy().into_owned());
 
     let id = state::unique_id("t-");
-    let spec = runner::spec_from_settings(&settings, &url, &id);
+    let spec = runner::spec_from_settings(&settings, url, &id);
 
     let mut task = Task::new(
         id.clone(),
-        url,
+        url.to_string(),
         output_dir,
         // 显示的就是**实际会用的**那个表达式（含编码偏好），不是裸预设——
         // 否则任务详情里那行会与实际命令行对不上。
@@ -414,7 +482,7 @@ fn add_url(app: AppHandle, url: String) -> Task {
     let _ = app.emit("task://update", app.state::<AppState>().snapshot());
     app.state::<Scheduler>().enqueue_probe(id);
 
-    task
+    Ok(task)
 }
 
 /// 播放列表勾选完成后开始下载。
@@ -678,12 +746,84 @@ fn delete_file(state: State<AppState>, id: String) -> Result<(), String> {
     }
 }
 
+/// 移动 / 重命名已下载的成品文件（ROADMAP §F5）。
+///
+/// `new_dir`：移动到目标目录（保留原文件名）；`new_name`：重命名（留在原目录）。
+/// 两者可同时给——先移动再改名。**绝不静默覆盖**：目标已存在就报错。
+/// 只允许 completed / skipped 状态；下载中的任务文件句柄被占用，拒绝。
+#[tauri::command(async)]
+fn relocate_file(
+    app: AppHandle,
+    id: String,
+    new_dir: Option<String>,
+    new_name: Option<String>,
+) -> Result<String, String> {
+    let (src, output_dir, state_kind) = {
+        let st = app.state::<AppState>();
+        let tasks = st.tasks.lock().map_err(|e| e.to_string())?;
+        let t = tasks.iter().find(|t| t.id == id).ok_or("任务不存在")?;
+        let src = t.filepath.clone().ok_or("该任务没有已落地的文件")?;
+        (src, t.output_dir.clone(), t.state.clone())
+    };
+
+    if state_kind == "downloading" || state_kind == "postprocessing" || state_kind == "paused" {
+        return Err("任务正在下载或后处理，不能移动文件".into());
+    }
+
+    let src_path = std::path::PathBuf::from(&src);
+    if !src_path.exists() {
+        return Err(format!("源文件不存在：{src}"));
+    }
+
+    let file_name = new_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            src_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+        });
+
+    let dir = new_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(&output_dir));
+
+    let dst = dir.join(file_name);
+    if dst == src_path {
+        return Ok(src); // 没变化，不报错
+    }
+    if dst.exists() {
+        return Err(format!("目标已存在，不会覆盖：{}", dst.display()));
+    }
+    // 目标目录可能不存在（比如用户手填了一个新目录），先建好。
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("无法创建目标目录：{e}"))?;
+    }
+
+    std::fs::rename(&src_path, &dst).map_err(|e| {
+        format!("移动失败（文件可能正被占用）：{e}")
+    })?;
+
+    let new_path = dst.to_string_lossy().into_owned();
+    app.state::<AppState>().with_task(&id, |t| {
+        t.filepath = Some(new_path.clone());
+        t.output_dir = dir.to_string_lossy().into_owned();
+    });
+    let _ = app.emit("task://update", app.state::<AppState>().snapshot());
+
+    Ok(new_path)
+}
+
 /// 用系统默认程序打开已下载的文件（行双击 / 详情里的「打开文件」）。
 #[tauri::command(async)]
 fn open_file(path: String) -> Result<(), String> {
     shell::open_file(&path)
 }
-
 /// 在资源管理器中选中该文件（而不是打开它）。
 #[tauri::command(async)]
 fn reveal_file(path: String) -> Result<(), String> {
@@ -707,6 +847,74 @@ async fn pick_file(initial: Option<String>) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || shell::pick_file(initial.as_deref()))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// 磁盘空间预估（ROADMAP §F6）。
+///
+/// 把「进行中/排队中」任务的预估大小求和，与输出目录所在盘的剩余空间对比，
+/// 返回是否需要提醒。**只警告不硬拦**：预估值可能偏小（合并/嵌入后更大），
+/// 也可能整块缺失（拿不到就是 None），所以由前端提示、用户决定继续与否。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiskSpaceReport {
+    /// 输出目录所在卷的剩余可用字节；拿不到为 null。
+    free_bytes: Option<u64>,
+    /// 所有待下载任务的预估大小之和；任何一条拿不到就为 null（保守，不误判）。
+    needed_bytes: Option<u64>,
+    /// 是否需要提醒（剩余 < 预估 × 1.2，留 20% 余量）。
+    warn: bool,
+}
+
+#[tauri::command]
+fn disk_space_check(state: State<AppState>) -> DiskSpaceReport {
+    use crate::state::ACTIVE_STATES;
+    let tasks = state.tasks.lock().map(|t| t.clone()).unwrap_or_default();
+
+    // 待下载 = 还没落地的那些（含进行中/排队/探测/待选择）。
+    let pending: Vec<&Task> = tasks
+        .iter()
+        .filter(|t| ACTIVE_STATES.contains(&t.state.as_str()))
+        .collect();
+
+    let output_dir = state
+        .settings
+        .lock()
+        .ok()
+        .and_then(|s| {
+            s.get("outputDir")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| paths::default_output_dir().to_string_lossy().into_owned());
+
+    let free_bytes = shell::disk_free_bytes(&output_dir);
+
+    // 所有待下载任务都有 sizeEstimate 才求和；任一条 None 就整体 None——
+    // 否则会低估所需空间，把「放不下」误判成「放得下」。
+    let mut sum: Option<u64> = Some(0);
+    for t in &pending {
+        match t.size_estimate {
+            Some(v) => sum = sum.map(|s| s.saturating_add(v)),
+            None => {
+                sum = None;
+                break;
+            }
+        }
+    }
+
+    let warn = match (free_bytes, sum) {
+        (Some(free), Some(need)) => {
+            let need_with_margin = need.saturating_mul(12).checked_div(10).unwrap_or(u64::MAX);
+            free < need_with_margin
+        }
+        _ => false,
+    };
+
+    DiskSpaceReport {
+        free_bytes,
+        needed_bytes: sum,
+        warn,
+    }
 }
 
 /// 探测可用格式。
@@ -1055,6 +1263,7 @@ async fn ytdlp_info(state: State<'_, AppState>) -> Result<Value, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // 把窗口夹到当前显示器能容纳的范围。
             //
@@ -1155,6 +1364,7 @@ pub fn run() {
             save_settings,
             list_tasks,
             add_url,
+            add_urls,
             start_playlist,
             scheduler_stats,
             pause_task,
@@ -1166,8 +1376,10 @@ pub fn run() {
             delete_file,
             open_file,
             reveal_file,
+            relocate_file,
             pick_folder,
             pick_file,
+            disk_space_check,
             probe_formats,
             ytdlp_info,
             aria2c_info,

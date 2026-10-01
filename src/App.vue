@@ -5,8 +5,8 @@ import AddUrlBar from './components/AddUrlBar.vue'
 import TaskRow from './components/TaskRow.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import { useVirtualList } from './composables/useVirtualList'
-import { fmtSpeed, shortenPath } from './utils'
-import { isTauri } from './ipc'
+import { fmtBytes, fmtSpeed, shortenPath } from './utils'
+import { api, isTauri } from './ipc'
 
 const store = useTaskStore()
 const query = ref('')
@@ -74,10 +74,13 @@ onMounted(async () => {
   // 调度器状态是辅助信息，用低频轮询即可，不必走事件通道。
   await store.refreshStats()
   statsTimer = window.setInterval(() => store.refreshStats(), 1500)
+  // 磁盘空间预估（ROADMAP §F6）：任务增删/状态变化后重算。
+  await store.checkDiskSpace()
 })
 
 onUnmounted(() => {
   if (statsTimer !== null) window.clearInterval(statsTimer)
+  stopClipboardWatch()
 })
 
 const filters: { key: Filter; label: string }[] = [
@@ -155,10 +158,88 @@ const hostLimitLabel = computed(() => {
   return `下载 ${s.downloading}/${s.downloadLimit} · 同站 ${s.perHostLimit}`
 })
 
+/** 磁盘空间警告文案（ROADMAP §F6）。 */
+const diskWarn = computed(() => {
+  const r = store.diskReport
+  if (!r?.warn) return null
+  const free = r.freeBytes != null ? fmtBytes(r.freeBytes) : '未知'
+  const need = r.neededBytes != null ? fmtBytes(r.neededBytes) : '未知'
+  return `输出目录所在磁盘剩余空间可能不足：预估还需 ${need}（含 20% 余量），当前剩余 ${free}。建议清理空间或更换输出目录。`
+})
+
 /** 事件通道不可用时的「重试」：重载会重新走一遍订阅。 */
 function reload() {
   window.location.reload()
 }
+
+/* ───────────────── 剪贴板监听（ROADMAP §F4）─────────────────
+ *
+ * 复制一个链接就弹「要下载吗」气泡。默认关（`watchClipboard`），
+ * 只在 Tauri 环境生效（浏览器 demo 里 navigator.clipboard 会被权限卡住，
+ * 而 Tauri 后端走 Win32 API，见 clipboard.rs）。
+ */
+const clipboardTip = ref<{ url: string } | null>(null)
+let clipboardTimer: number | null = null
+let lastClipboard = ''
+
+function dismissClipboardTip() {
+  clipboardTip.value = null
+}
+
+async function pollClipboard() {
+  if (!store.settings?.watchClipboard) return
+  let text = ''
+  try {
+    text = await api.readClipboard()
+  } catch {
+    return // 读失败静默，下一轮再试
+  }
+  text = text.trim()
+  if (!text || text === lastClipboard) return
+  lastClipboard = text
+  // 只认「像链接」的文本，且不是已经在队列里的。
+  if (!/^https?:\/\/|^magnet:/i.test(text)) return
+  if (store.tasks.some((t) => t.url === text)) return
+  clipboardTip.value = { url: text }
+}
+
+function startClipboardWatch() {
+  if (clipboardTimer !== null) return
+  clipboardTimer = window.setInterval(pollClipboard, 800)
+}
+
+function stopClipboardWatch() {
+  if (clipboardTimer !== null) {
+    window.clearInterval(clipboardTimer)
+    clipboardTimer = null
+  }
+}
+
+async function acceptClipboard() {
+  const tip = clipboardTip.value
+  if (!tip) return
+  clipboardTip.value = null
+  await store.addUrl(tip.url)
+}
+
+watch(
+  () => store.settings?.watchClipboard,
+  (on) => {
+    if (on && isTauri()) startClipboardWatch()
+    else stopClipboardWatch()
+  },
+  { immediate: true },
+)
+
+/* 任务增删/状态变化后，防抖重查磁盘空间（ROADMAP §F6）。 */
+let diskTimer: number | null = null
+watch(
+  () => store.tasks.map((t) => `${t.id}:${t.state}:${t.sizeEstimate}`).join('|'),
+  () => {
+    if (diskTimer !== null) window.clearTimeout(diskTimer)
+    diskTimer = window.setTimeout(() => store.checkDiskSpace(), 400)
+  },
+)
 </script>
 
 <template>
@@ -286,6 +367,12 @@ function reload() {
           <button class="btn ghost sm" @click="store.lastError = null">✕</button>
         </div>
 
+        <!-- 磁盘空间不足预警（ROADMAP §F6）：只提醒，不硬拦 -->
+        <div v-if="diskWarn" class="disk-banner">
+          <span class="db-icon">⛔</span>
+          <span class="db-text">{{ diskWarn }}</span>
+        </div>
+
         <div ref="listWrap" class="list-wrap">
           <div v-if="shown.length === 0" class="empty">
             <div class="empty-icon">⬇</div>
@@ -337,6 +424,18 @@ function reload() {
           <span class="fab-ic" aria-hidden="true">⟳</span>
           <span class="fab-label">刷新</span>
         </button>
+
+        <!-- 剪贴板监听气泡（ROADMAP §F4）：复制链接后询问是否下载 -->
+        <div v-if="clipboardTip" class="clip-tip">
+          <div class="clip-tip-text">
+            检测到复制的链接，要下载吗？
+            <span class="clip-url">{{ clipboardTip.url }}</span>
+          </div>
+          <div class="clip-tip-actions">
+            <button class="btn sm primary" @click="acceptClipboard">下载</button>
+            <button class="btn sm ghost" @click="dismissClipboardTip">忽略</button>
+          </div>
+        </div>
       </template>
     </main>
   </div>
@@ -609,6 +708,27 @@ function reload() {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.disk-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 22px 12px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(179, 105, 10, 0.06);
+  border: 1px solid rgba(179, 105, 10, 0.28);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.db-icon {
+  flex-shrink: 0;
+  font-size: var(--fs-md);
+}
+.db-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .list {
   display: flex;
   flex-direction: column;
@@ -735,5 +855,37 @@ function reload() {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* ── 剪贴板监听气泡（ROADMAP §F4）──
+   同样 fixed 锚在右下角、刷新按钮上方。 */
+.clip-tip {
+  position: fixed;
+  right: 22px;
+  bottom: 112px;
+  z-index: 2000;
+  max-width: 360px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e3e6ee);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  font-size: var(--fs-md);
+}
+.clip-tip-text {
+  margin-bottom: 10px;
+  color: var(--text, #1f2430);
+}
+.clip-url {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--fs-sm);
+  color: var(--text-mute, #8a91a2);
+  word-break: break-all;
+}
+.clip-tip-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 </style>

@@ -39,7 +39,7 @@ pub use probe::{
     format_kind, has_codec, parse_info_json, FormatInfo, FormatKind, MediaInfo, PlaylistEntry,
 };
 pub use proxy::{matches_pattern, parse_bypass, parse_proxy_url, ProxyConfig, ProxyProtocol};
-pub use url::host_of;
+pub use url::{host_of, is_valid_url};
 pub use version::{is_newer, looks_like_version};
 
 /// 任务状态机（DESIGN §5.4）。
