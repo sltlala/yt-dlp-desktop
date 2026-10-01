@@ -1675,6 +1675,21 @@ yt-dlp 给 B站的是 `http://i1.hdslb.com/bfs/...`，而 YouTube 一律给 `htt
 把 `http://` 换成 `https://`。实测 `i1.hdslb.com` 支持 https（同一个 URL 换头
 后 200、字节数一致），所以直接换头是安全的；`data:` 内联图原样保留，不动。
 
+**⚠️ 但这只是必要条件，不是充分条件**（第二次事故）：https 化之后 B站缩略图**仍不显示**。
+真正的第二道墙是**防盗链**——B站的 `i1.hdslb.com` 会看 `Referer`，只要 Referer 不是
+`bilibili.com` 就回 403：
+
+| Referer | 结果 |
+|---|---|
+| 无 Referer | 200 |
+| `https://www.bilibili.com/...` | 200 |
+| `tauri://localhost`（生产 origin） | 403 |
+| `http://127.0.0.1:5183/`（dev origin） | 403 |
+
+而 `<img>` 默认会把**当前页面 origin** 塞进 Referer，正好触发 403。YouTube 不做防盗链，
+所以只有 B站那张挂掉。修法：缩略图 `<img>` 加 `referrerpolicy="no-referrer"`，
+让浏览器**不发送 Referer**——B站对「无 Referer」是放行的（200）。
+
 ---
 
 ## 16. 待定（尚未决策）

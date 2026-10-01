@@ -116,7 +116,12 @@ const canOpen = computed(() => !!t.value.filepath)
 
       <!-- 缩略图 -->
       <div class="thumb" @click="onRowClick">
-        <img v-if="t.thumbnail" :src="t.thumbnail" alt="" />
+        <img
+          v-if="t.thumbnail"
+          :src="t.thumbnail"
+          referrerpolicy="no-referrer"
+          alt=""
+        />
         <div v-else class="thumb-ph">🎬</div>
         <span v-if="t.durationSec" class="dur">{{ fmtDuration(t.durationSec) }}</span>
       </div>
