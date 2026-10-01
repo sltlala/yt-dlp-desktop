@@ -7,6 +7,15 @@ export type Filter = 'all' | 'active' | 'completed' | 'failed'
 /** 事件通道失败时的降级轮询句柄。 */
 let pollTimer: number | null = null
 
+/**
+ * 悬浮刷新按钮图标的最短转圈时长。
+ *
+ * 本地 IPC 刷新几毫秒就完成，若立刻复位 `refreshing`，旋转动画的类加了
+ * 又删，浏览器一帧都来不及画——用户看到的是「没转」。这里保证至少转完一圈
+ * （CSS 动画 0.8s/圈）。
+ */
+const REFRESH_MIN_SPIN_MS = 900
+
 export const useTaskStore = defineStore('tasks', {
   state: () => ({
     tasks: [] as Task[],
@@ -269,18 +278,26 @@ export const useTaskStore = defineStore('tasks', {
       if (this.refreshing) return
       this.refreshing = true
       this.lastError = null
+      const started = Date.now()
       try {
-        this.tasks = await api.listTasks()
-        this.settings = await api.getSettings()
+        const [tasks, settings] = await Promise.all([api.listTasks(), api.getSettings()])
+        this.tasks = tasks
+        this.settings = settings
         // 推进版本号，让 <img> 的 cache-bust 查询串变化 → 浏览器重取缩略图
         this.thumbVersion++
         await this.refreshStats()
       } catch (e) {
         console.error('[refresh] 失败', e)
         this.lastError = `刷新失败：${String(e)}`
-      } finally {
-        this.refreshing = false
       }
+      // 本地 IPC 只要几毫秒，若立刻复位 refreshing，`.spinning` 类加了又被删，
+      // 浏览器根本没机会画一帧 → 用户只看到「没转圈」。这里兜底至少转一圈
+      // （动画 0.8s/圈，留 0.9s），转完即停。
+      const remain = REFRESH_MIN_SPIN_MS - (Date.now() - started)
+      if (remain > 0) {
+        await new Promise((r) => setTimeout(r, remain))
+      }
+      this.refreshing = false
     },
 
     async saveSettings(s: Settings) {
