@@ -1347,6 +1347,43 @@ src-tauri/binaries/
 aria2c 未找到时**由宿主就地关掉该选项并告警**（见 §11.6），而不是让任务失败、
 也不是让 yt-dlp 静默回落。
 
+### 11.8 ⚠️ aria2c 解不开「裸 deflate」+ 成品已落地却判失败（B站弹幕事故）
+
+**事故现场**：B站视频开 aria2c + 嵌入字幕，任务红了。但成品 mkv 已经下载、
+合并、移动到目标目录（25 MB 完整文件），归档里也有了它——只有任务状态是 `failed`，
+错误 `aria2c exited with code 1`。
+
+**根因链**（每一步都实测过）：
+
+1. B站把弹幕当作一条名为 `danmaku` 的字幕，URL 是 `https://comment.bilibili.com/<cid>.xml`。
+2. 那个接口返回 `Content-Encoding: deflate`，但字节流是**裸 deflate**（没有 zlib/gzip 头，
+   前两字节不是 `1f 8b`）。
+3. aria2c 1.37 的 gzip 过滤器解不开裸 deflate：
+   `[GZipDecodingStreamFilter.cc:108] libz::inflate() failed. cause:incorrect header check`
+4. yt-dlp 把这条外部下载器的报错算进退出码 → 整条命令 exit 1 → 宿主判 `failed`。
+
+**为什么不能靠 aria2c 的开关救**（都试过、都无效）：`--http-accept-gzip=false`、
+`--header=Accept-Encoding: identity`——站点**一律**回裸 deflate，无视请求头。
+**原生下载器则完全正常**：同样一个 URL，`yt-dlp`（无 `--external-downloader`）
+退出 0，解出 8651 B 的弹幕 XML。
+
+**为什么这条字幕本来就该丢掉**：弹幕是 **XML**，而 `--embed-subs` 只走 ffmpeg，
+ffmpeg 对 XML 直接报 `Invalid data found when processing input`——**永远嵌不进 mp4/mkv**。
+所以它是一句「下下来也没用、还会把整单判失败」的请求。对策：
+
+1. **默认 `--sub-langs` 排除 `danmaku`**（`DEFAULT_SUB_LANGS = all,-live_chat,-danmaku`，§14.7），
+   并迁移旧默认值。用户显式写回 `danmaku` 是逃生门，不动。
+2. **终态判定加一条规则**：非零退出码下，只要成品文件已落地（`filepath.txt` 这一轮
+   给出了路径、且磁盘上文件 > 0 字节）而且**不是多集选集任务**，就记 `completed` + 挂警告
+   「成品文件已生成，但 yt-dlp 以退出码 N 结束：…（多为附加文件失败，不影响视频本体）」，
+   而不是 `failed`。这一条不针对弹幕，是通用兜底——§11.4 的「字节全下完却判失败」
+   是同一类阴险失败。
+
+   ⚠️ 判定必须看**这一轮**的 `filepath.txt`，不能看任务上遗留的 `t.filepath`：
+   后者可能还留着上一次尝试的旧路径。`filepath.txt` 每轮派发前都截断，所以读到 None
+   就意味着这一轮没产出。选集任务（`--playlist-items`）多集共用一个 `filepath.txt`，
+   最后一行只代表最后一集，会漏掉中间某一集失败，所以那类任务非零退出码**仍判 failed**。
+
 ---
 
 ## 12. download-archive
@@ -1523,6 +1560,19 @@ mp4 的脆弱点（源码注释自承）：
 1. **只设 `--sub-langs` 而不启用 `--write-subs`/`--embed-subs`，不会有任何效果**——
    语言选择器必须与「下载/嵌入」开关联动，否则用户以为选了语言就生效了
 2. **自动生成字幕需要 `--write-auto-subs`**（YouTube 自动字幕）——仅 `--write-subs` 拿不到
+
+### 14.7 默认字幕语言排除 `danmaku`（已确定）
+
+默认 `--sub-langs` 是 `all,-live_chat,-danmaku`（`DEFAULT_SUB_LANGS`），
+两个 `-` 排除各有理由：
+
+- `-live_chat`：YouTube 直播录像的滚动聊天重播，动辄几十万条，纯噪音。
+- `-danmaku`：B站弹幕是 **XML**，ffmpeg 读不了（`Invalid data found when processing input`），
+  `--embed-subs` 永远嵌不进 mp4/mkv；而且 `comment.bilibili.com` 返回裸 deflate，
+  aria2c 解不开，会把整单判失败。详见 §11.8 的事故复盘。
+
+升级迁移只改写**恰好等于旧默认值**（`all,-live_chat`）的存量配置；
+用户自己填过的一律不动——把 `danmaku` 显式写回是逃生门（配合关掉 aria2c 即可正常拿到弹幕 XML）。
 
 ---
 

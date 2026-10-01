@@ -330,6 +330,18 @@ pub async fn run_download(app: AppHandle, task_id: String) {
         .ok()
         .and_then(|c| ytdlp_core::parse_filepath_file(&c));
 
+    // 「成品是否真的落地了」只用**这一轮**的 filepath.txt 判断，不能看 `t.filepath`：
+    // 它可能还留着上一次尝试的旧路径。filepath.txt 每轮派发前都被截断（见上），
+    // 所以这里读到 None 就意味着这一轮没有产出成品。
+    let produced = filepath
+        .as_deref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len() > 0)
+        .unwrap_or(false);
+    // 选集任务（`--playlist-items`）多集共用一个 filepath.txt，最后一行只代表最后一集，
+    // 用它判断「整单是否都下好了」会漏掉中间某一集失败，所以非零退出码一律判 failed。
+    let multi_item = spec.playlist_items.is_some();
+
     update(&app, &task_id, |t| {
         t.post_process = None;
         t.progress.speed = None;
@@ -356,6 +368,19 @@ pub async fn run_download(app: AppHandle, task_id: String) {
                 t.state = "completed".into();
                 t.finished_at = Some(crate::state::now_ms());
             }
+        } else if should_complete_despite_exit(produced, multi_item) {
+            // 成品文件已经在磁盘上：媒体本身下载成功，非零退出码只是附加项失败
+            // （字幕/弹幕/缩略图/元数据等）。不能判 failed，否则用户明明拿到了
+            // 完整视频，任务却红成失败（DESIGN §11.8，B站弹幕那起事故）。
+            t.state = "completed".into();
+            t.finished_at = Some(crate::state::now_ms());
+            let err = t.error.take().unwrap_or_else(|| format!("yt-dlp 退出码 {code}"));
+            let msg = format!(
+                "成品文件已生成，但 yt-dlp 以退出码 {code} 结束：{err}（多为附加文件失败，不影响视频本体）"
+            );
+            if t.warnings.len() < 20 && !t.warnings.contains(&msg) {
+                t.warnings.push(msg);
+            }
         } else {
             t.state = "failed".into();
             if t.error.is_none() {
@@ -372,6 +397,11 @@ pub async fn run_download(app: AppHandle, task_id: String) {
                 .error
                 .as_deref()
                 .map(|e| format!("  错误：{}", e.replace('\n', " ")))
+                .or_else(|| {
+                    t.warnings
+                        .last()
+                        .map(|w| format!("  提示：{}", w.replace('\n', " ")))
+                })
                 .unwrap_or_default();
             let line = format!("[{task_id}] 结束：{}  exit={code}{detail}", t.state);
             if t.state == "failed" || t.state == "canceled" {
@@ -1028,6 +1058,13 @@ fn fail(app: &AppHandle, task_id: &str, msg: &str) {
     });
 }
 
+/// 非零退出码下，成品文件已落地、且不是多集选集任务时，说明媒体本身下载成功，
+/// 剩余的错误只是附加项失败（字幕/弹幕/缩略图/元数据等）——应当记「已完成 + 警告」
+/// 而不是 failed。抽成纯函数好单测（DESIGN §11.8）。
+fn should_complete_despite_exit(produced: bool, multi_item: bool) -> bool {
+    produced && !multi_item
+}
+
 /// 把 yt-dlp 的原始报错归类成用户看得懂的原因（DESIGN §6、§14）。
 ///
 /// 不做这层归类，用户只会看到一段 stderr 然后反复重试。
@@ -1178,6 +1215,19 @@ pub fn cancel_task(app: &AppHandle, task_id: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ─────────── 成品已落地时的终态判定 ───────────
+
+    /// DESIGN §11.8：成品文件在磁盘上 + 非多集选集 → 非零退出码仍算「已完成」。
+    #[test]
+    fn produced_but_failed_should_complete() {
+        assert!(should_complete_despite_exit(true, false));
+        // 没有产出成品 → 仍判失败
+        assert!(!should_complete_despite_exit(false, false));
+        // 选集任务 → 保守，仍判失败（多集共用一个 filepath.txt，最后一行不代表全单）
+        assert!(!should_complete_despite_exit(true, true));
+        assert!(!should_complete_despite_exit(false, true));
+    }
 
     // ─────────── 日志里的命令行渲染 ───────────
 

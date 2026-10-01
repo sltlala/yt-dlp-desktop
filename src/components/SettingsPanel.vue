@@ -967,7 +967,7 @@ const templateWarning = computed(() => {
           </label>
           <template v-if="s.embed.subs">
             <label class="field">
-              <span>字幕语言<em>逗号分隔，支持 all 与 - 排除，如 all,-live_chat</em></span>
+              <span>字幕语言<em>逗号分隔，支持 all 与 - 排除，默认 all,-live_chat,-danmaku</em></span>
               <input v-model="s.embed.subLangs" class="mono" />
             </label>
             <label class="check sub">

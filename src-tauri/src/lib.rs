@@ -36,7 +36,7 @@ fn default_settings() -> Value {
         "audioFormat": "mp3",
         "container": "auto",
         "embed": {
-            "subs": false, "subLangs": "all,-live_chat", "autoSubs": false,
+            "subs": false, "subLangs": ytdlp_core::DEFAULT_SUB_LANGS, "autoSubs": false,
             "keepSubFiles": false, "thumbnail": false, "keepThumbnailFile": false,
             "metadata": false, "chapters": false, "infoJson": false
         },
@@ -178,6 +178,22 @@ fn normalize_settings(s: Value) -> Value {
     // 看起来像个能用的开关。这里显式丢掉，避免误导。
     if let Some(obj) = s.as_object_mut() {
         obj.remove("proxyBypass");
+    }
+    // 老配置里 `subLangs` 是旧默认值 `all,-live_chat`：它没排除 `danmaku`，而 B站弹幕
+    // 既嵌不进 mkv（XML，ffmpeg 读不了），走 aria2c 又必然报错（裸 deflate 解不开），
+    // 会把整条任务判失败。只迁移**恰好等于旧默认值**的配置——用户自己填过的一律不动。
+    // 放在 `merge_defaults` 之后：此时缺键已被补成新默认值，剩下的就是真正的存量。
+    if s.pointer("/embed/subLangs")
+        .and_then(|v| v.as_str())
+        .map(|v| v.trim() == ytdlp_core::LEGACY_DEFAULT_SUB_LANGS)
+        .unwrap_or(false)
+    {
+        if let Some(embed) = s.get_mut("embed").and_then(Value::as_object_mut) {
+            embed.insert(
+                "subLangs".into(),
+                Value::String(ytdlp_core::DEFAULT_SUB_LANGS.to_string()),
+            );
+        }
     }
     let blank = s
         .get("outputDir")
@@ -1176,6 +1192,25 @@ mod tests {
         // 手工写进去的值必须被保留，否则逃生门形同虚设。
         let s = normalize_settings(json!({ "jsRemoteComponents": true }));
         assert_eq!(s["jsRemoteComponents"], json!(true));
+    }
+
+    /// 旧默认 `all,-live_chat` 必须被迁成含 `-danmaku` 的新默认；用户自定义值原样保留。
+    #[test]
+    fn sub_langs_migrates_legacy_default_only() {
+        // 恰好等于旧默认 → 迁移
+        let s = normalize_settings(json!({ "embed": { "subs": true, "subLangs": "all,-live_chat" } }));
+        assert_eq!(
+            s["embed"]["subLangs"], json!(ytdlp_core::DEFAULT_SUB_LANGS),
+            "实际: {}", s["embed"]["subLangs"]
+        );
+        // 缺键 → 补成新默认
+        let s = normalize_settings(json!({}));
+        assert_eq!(s["embed"]["subLangs"], json!(ytdlp_core::DEFAULT_SUB_LANGS));
+        // 用户自定义 → 不动（这是逃生门）
+        let s = normalize_settings(json!({ "embed": { "subLangs": "zh-Hans,en" } }));
+        assert_eq!(s["embed"]["subLangs"], json!("zh-Hans,en"));
+        let s = normalize_settings(json!({ "embed": { "subLangs": "all,-live_chat,danmaku" } }));
+        assert_eq!(s["embed"]["subLangs"], json!("all,-live_chat,danmaku"));
     }
 
     #[test]

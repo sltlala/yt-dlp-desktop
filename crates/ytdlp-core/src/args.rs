@@ -37,6 +37,34 @@ pub fn progress_template() -> String {
 /// 最终路径落地文件名（放在任务的 temp 目录里）。
 pub const FILEPATH_FILE: &str = "filepath.txt";
 
+/// 默认的 `--sub-langs` 值（DESIGN §14.7）。
+///
+/// `-live_chat` 是 YouTube 的滚动聊天重播，`-danmaku` 是 B站的弹幕。
+/// 这两个都排除掉，原因不同：
+///
+/// - `live_chat`：跟着直播录像走，动辄几十万条，纯噪音。
+/// - `danmaku`：**它是 XML，而 `--embed-subs` 只走 ffmpeg，ffmpeg 根本读不了 XML**
+///   （实测 `Invalid data found when processing input`），所以永远嵌不进 mp4/mkv；
+///   更糟的是 `comment.bilibili.com` 返回的是**裸 deflate**（`Content-Encoding: deflate`
+///   但字节流没有 zlib/gzip 头），aria2c 1.37 的 gzip 过滤器解不开：
+///
+///   ```text
+///   [GZipDecodingStreamFilter.cc:108] libz::inflate() failed. cause:incorrect header check
+///   ERROR: aria2c exited with code 1
+///   ```
+///
+///   而 yt-dlp 把这条报错算进退出码，于是**成品 mkv 已经下载、合并、移动到目标目录之后**，
+///   整条任务仍被判成 failed（实测就是这样丢了一个 25 MB 的成品）。
+///   试过 `--http-accept-gzip=false` 和 `--header=Accept-Encoding: identity` 都无效，
+///   站点一律回裸 deflate——aria2c 这条路走不通。
+///
+/// 想要弹幕的用户仍然可以自己把 `danmaku` 写回设置（同时关掉 aria2c，
+/// 原生下载器解 deflate 是正常的）。
+pub const DEFAULT_SUB_LANGS: &str = "all,-live_chat,-danmaku";
+
+/// 上一版的默认值，仅供升级迁移识别（见 `normalize_settings`）。
+pub const LEGACY_DEFAULT_SUB_LANGS: &str = "all,-live_chat";
+
 // ─────────────────────────── 类型 ───────────────────────────
 
 /// 容器选择。
@@ -701,7 +729,7 @@ fn push_embed_args(a: &mut Vec<String>, spec: &DownloadSpec) {
             a.push("--write-auto-subs".into());
         }
         let langs = if e.sub_langs.trim().is_empty() {
-            "all,-live_chat"
+            DEFAULT_SUB_LANGS
         } else {
             e.sub_langs.trim()
         };
@@ -1060,12 +1088,32 @@ mod tests {
         s.embed.subs = true;
         let a = build_download_args(&s);
         let i = a.iter().position(|x| x == "--sub-langs").unwrap();
-        assert_eq!(a[i + 1], "all,-live_chat");
+        assert_eq!(a[i + 1], DEFAULT_SUB_LANGS);
 
         s.embed.sub_langs = "zh-Hans,en".into();
         let a = build_download_args(&s);
         let i = a.iter().position(|x| x == "--sub-langs").unwrap();
         assert_eq!(a[i + 1], "zh-Hans,en");
+    }
+
+    /// DESIGN §14.7：默认值必须排除 `danmaku`，否则 B站下载会因为一条
+    /// **永远嵌不进去**的弹幕 XML 被判失败（成品其实已经下好了）。
+    #[test]
+    fn default_sub_langs_excludes_danmaku() {
+        assert!(DEFAULT_SUB_LANGS.split(',').any(|x| x == "-danmaku"));
+        assert!(DEFAULT_SUB_LANGS.split(',').any(|x| x == "-live_chat"));
+
+        let mut s = spec();
+        s.embed.subs = true;
+        let a = build_download_args(&s);
+        let i = a.iter().position(|x| x == "--sub-langs").unwrap();
+        assert!(a[i + 1].contains("-danmaku"), "实际: {}", a[i + 1]);
+
+        // 用户显式写回 danmaku 时必须原样透传：这是逃生门，不是我们要替他决定的事。
+        s.embed.sub_langs = "all,-live_chat,danmaku".into();
+        let a = build_download_args(&s);
+        let i = a.iter().position(|x| x == "--sub-langs").unwrap();
+        assert_eq!(a[i + 1], "all,-live_chat,danmaku");
     }
 
     /// DESIGN §11：aria2c 的三条硬要求。
