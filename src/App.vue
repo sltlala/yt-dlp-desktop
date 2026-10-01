@@ -682,7 +682,8 @@ function reload() {
 /* ── 悬浮刷新按钮 ──
  *
  * fixed 定位，锚在右下角、状态栏上方。任务列表在 `.list-wrap` 里滚动，
- * 这个按钮不在其中，所以始终可见。加一层投影与描边，避免和列表内容糊在一起。
+ * 这个按钮不在其中，所以始终可见。半透明、淡色调，像一片磨砂玻璃浮在
+ * 列表上——不抢注意力，但始终够得着。
  */
 .fab-refresh {
   position: fixed;
@@ -694,26 +695,30 @@ function reload() {
   gap: 7px;
   padding: 10px 16px;
   border-radius: 999px;
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  color: #fff;
+  /* 半透明 + 淡色：低饱和的蓝，叠在列表上也不会糊成一团 */
+  background: rgba(61, 110, 245, 0.12);
+  border: 1px solid rgba(61, 110, 245, 0.22);
+  color: #5b82f7;
   font-weight: 600;
   font-size: var(--fs-md);
-  box-shadow: 0 6px 20px rgba(61, 110, 245, 0.38);
-  transition: background 0.13s, transform 0.13s, box-shadow 0.13s;
+  box-shadow: 0 4px 14px rgba(61, 110, 245, 0.14);
+  backdrop-filter: blur(6px);
+  transition: background 0.13s, border-color 0.13s, color 0.13s, transform 0.13s,
+    box-shadow 0.13s;
 }
 .fab-refresh:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+  background: rgba(61, 110, 245, 0.2);
+  border-color: rgba(61, 110, 245, 0.32);
+  color: #3d6ef5;
   transform: translateY(-1px);
-  box-shadow: 0 8px 24px rgba(61, 110, 245, 0.45);
+  box-shadow: 0 6px 18px rgba(61, 110, 245, 0.2);
 }
 .fab-refresh:active:not(:disabled) {
   transform: translateY(0);
-  box-shadow: 0 4px 14px rgba(61, 110, 245, 0.34);
+  box-shadow: 0 3px 10px rgba(61, 110, 245, 0.16);
 }
 .fab-refresh:disabled {
-  opacity: 0.75;
+  opacity: 0.7;
   cursor: progress;
 }
 .fab-ic {
@@ -721,9 +726,9 @@ function reload() {
   font-size: var(--fs-lg);
   line-height: 1;
 }
-/* 刷新中图标旋转，转起来就是「正在做事」的反馈 */
+/* 刷新中图标旋转，转起来就是「正在做事」的反馈；`refreshing` 一复位就停 */
 .fab-refresh.spinning .fab-ic {
-  animation: fab-spin 0.9s linear infinite;
+  animation: fab-spin 0.8s linear infinite;
 }
 @keyframes fab-spin {
   to {
