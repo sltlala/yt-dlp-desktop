@@ -726,9 +726,10 @@ function reload() {
   font-size: var(--fs-lg);
   line-height: 1;
 }
-/* 刷新中图标旋转，转起来就是「正在做事」的反馈；`refreshing` 一复位就停 */
+/* 刷新中图标旋转，转起来就是「正在做事」的反馈；`refreshing` 一复位就停。
+   周期 0.9s 必须与 store 里 REFRESH_SPIN_PERIOD_MS 一致，停圈才对齐整圈。 */
 .fab-refresh.spinning .fab-ic {
-  animation: fab-spin 0.8s linear infinite;
+  animation: fab-spin 0.9s linear infinite;
 }
 @keyframes fab-spin {
   to {

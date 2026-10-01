@@ -11,10 +11,18 @@ let pollTimer: number | null = null
  * 悬浮刷新按钮图标的最短转圈时长。
  *
  * 本地 IPC 刷新几毫秒就完成，若立刻复位 `refreshing`，旋转动画的类加了
- * 又删，浏览器一帧都来不及画——用户看到的是「没转」。这里保证至少转完一圈
- * （CSS 动画 0.8s/圈）。
+ * 又删，浏览器一帧都来不及画——用户看到的是「没转」。这里保证至少转完一圈。
  */
 const REFRESH_MIN_SPIN_MS = 900
+
+/**
+ * 转一圈的周期，必须与 App.vue 里 `fab-spin` 动画的 duration（`0.9s`）一致。
+ *
+ * 停圈时机要对齐到**整圈边界**（360° 与 0° 视觉上同一处），否则图标会
+ * 「多转一点再复位」——上一版就是 0.8s/圈 撞上 900ms 时长 = 1.125 圈，
+ * 多出的 0.125 圈（45°）在复位时产生可见跳变。
+ */
+const REFRESH_SPIN_PERIOD_MS = 900
 
 export const useTaskStore = defineStore('tasks', {
   state: () => ({
@@ -291,11 +299,18 @@ export const useTaskStore = defineStore('tasks', {
         this.lastError = `刷新失败：${String(e)}`
       }
       // 本地 IPC 只要几毫秒，若立刻复位 refreshing，`.spinning` 类加了又被删，
-      // 浏览器根本没机会画一帧 → 用户只看到「没转圈」。这里兜底至少转一圈
-      // （动画 0.8s/圈，留 0.9s），转完即停。
-      const remain = REFRESH_MIN_SPIN_MS - (Date.now() - started)
+      // 浏览器根本没机会画一帧 → 用户只看到「没转圈」。这里兜底至少转一圈，
+      // 并把时长对齐到整圈边界，让图标停在 360°（= 0°，不可见跳变）。
+      const elapsed = Date.now() - started
+      const remain = REFRESH_MIN_SPIN_MS - elapsed
       if (remain > 0) {
         await new Promise((r) => setTimeout(r, remain))
+      }
+      // 万一真实刷新慢到跨过整圈，也补到下一个整圈边界，避免「多转一点再复位」
+      const done = Date.now() - started
+      const over = done % REFRESH_SPIN_PERIOD_MS
+      if (over > 0) {
+        await new Promise((r) => setTimeout(r, REFRESH_SPIN_PERIOD_MS - over))
       }
       this.refreshing = false
     },
