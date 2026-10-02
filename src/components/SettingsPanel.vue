@@ -18,7 +18,7 @@ const store = useTaskStore()
 
 // store.settings 是 Vue Proxy，必须用 deepClone 而非 structuredClone。
 const s = reactive<Settings>(deepClone(store.settings!))
-const tab = ref<'general' | 'format' | 'embed' | 'network' | 'download'>('general')
+const tab = ref<'general' | 'format' | 'network' | 'account' | 'download'>('general')
 const saved = ref(false)
 
 /* ───────────────────── Cookie（DESIGN §6）───────────────────── */
@@ -703,9 +703,9 @@ const templateWarning = computed(() => {
     <nav class="tabs">
       <button :class="{ on: tab === 'general' }" @click="tab = 'general'">常规</button>
       <button :class="{ on: tab === 'format' }" @click="tab = 'format'">格式</button>
-      <button :class="{ on: tab === 'embed' }" @click="tab = 'embed'">嵌入</button>
       <button :class="{ on: tab === 'download' }" @click="tab = 'download'">下载器</button>
-      <button :class="{ on: tab === 'network' }" @click="tab = 'network'">网络与账号</button>
+      <button :class="{ on: tab === 'network' }" @click="tab = 'network'">网络</button>
+      <button :class="{ on: tab === 'account' }" @click="tab = 'account'">账号</button>
     </nav>
 
     <div class="body">
@@ -908,6 +908,49 @@ const templateWarning = computed(() => {
               <input v-model.number="s.perHostConcurrency" type="number" min="1" max="4" />
             </label>
           </div>
+
+          <h3>通知</h3>
+          <label class="check">
+            <input v-model="s.notifyOnComplete" type="checkbox" />
+            <span>下载完成时弹系统通知</span>
+          </label>
+          <label class="check">
+            <input v-model="s.notifyOnFailure" type="checkbox" />
+            <span>下载失败时弹系统通知</span>
+          </label>
+          <label class="check">
+            <input v-model="s.notifyOnSkip" type="checkbox" />
+            <span>
+              「已跳过」也通知
+              <em>跳过 = 归档命中或文件已存在，通常不是坏事，默认关</em>
+            </span>
+          </label>
+          <p class="note">
+            任务在后台排队时，切到别的窗口也能收到结果提醒。
+            通知由应用发出，无需额外的系统权限（开发模式 `tauri dev` 下可能不弹，打包安装后正常）。
+          </p>
+
+          <label class="check">
+            <input v-model="s.watchClipboard" type="checkbox" />
+            <span>
+              监听剪贴板，复制链接即提示下载
+              <em>复制一个视频链接后弹「要下载吗」气泡；默认关，避免复制别的文本时误弹</em>
+            </span>
+          </label>
+
+          <h3>浏览器扩展一键推送</h3>
+          <label class="check">
+            <input v-model="s.browserPush" type="checkbox" />
+            <span>
+              启用本机接收端口
+              <em>允许浏览器扩展把当前页链接一键推给应用；只监听 127.0.0.1，本机外无法访问</em>
+            </span>
+          </label>
+          <p class="note">
+            应用会在 <code class="mono">127.0.0.1:19090</code> 上接收浏览器扩展发来的链接。
+            配合配套的浏览器扩展（右键「用 yt-dlp 下载」）使用。
+            取消勾选后应用不再监听该端口（重启生效）。
+          </p>
         </section>
 
         <!-- ───── 格式 ───── -->
@@ -955,7 +998,7 @@ const templateWarning = computed(() => {
           </label>
 
           <p v-if="s.preset === 'subsOnly'" class="note">
-            只下载字幕文件（不下载视频本体）。字幕语言在「嵌入」标签页里设置
+            只下载字幕文件（不下载视频本体）。字幕语言在本页下方「嵌入 → 字幕语言」里设置
             （默认 {{ s.embed.subLangs }}）。
           </p>
           <p v-if="s.preset === 'thumbnailOnly'" class="note">
@@ -998,10 +1041,8 @@ const templateWarning = computed(() => {
           <p v-if="codecCompatHint" class="note warn">
             {{ codecCompatHint }}
           </p>
-        </section>
 
-        <!-- ───── 嵌入 ───── -->
-        <section v-else-if="tab === 'embed'">
+          <h3>嵌入</h3>
           <div class="check-row">
             <label class="check">
               <input v-model="s.embed.subs" type="checkbox" />
@@ -1165,7 +1206,8 @@ const templateWarning = computed(() => {
         </section>
 
         <!-- ───── 网络与账号 ───── -->
-        <section v-else>
+        <!-- ───── 网络 ───── -->
+        <section v-else-if="tab === 'network'">
           <h3>代理</h3>
 
           <!--
@@ -1318,50 +1360,10 @@ const templateWarning = computed(() => {
             默认关闭是因为 yt-dlp 自己也不默认开：强制模拟会<strong>拖慢速度、降低稳定性</strong>。
             所以遇到拦截再打开，别一直挂着。
           </p>
+        </section>
 
-          <h3>通知</h3>
-          <label class="check">
-            <input v-model="s.notifyOnComplete" type="checkbox" />
-            <span>下载完成时弹系统通知</span>
-          </label>
-          <label class="check">
-            <input v-model="s.notifyOnFailure" type="checkbox" />
-            <span>下载失败时弹系统通知</span>
-          </label>
-          <label class="check">
-            <input v-model="s.notifyOnSkip" type="checkbox" />
-            <span>
-              「已跳过」也通知
-              <em>跳过 = 归档命中或文件已存在，通常不是坏事，默认关</em>
-            </span>
-          </label>
-          <p class="note">
-            任务在后台排队时，切到别的窗口也能收到结果提醒。
-            通知由应用发出，无需额外的系统权限（开发模式 `tauri dev` 下可能不弹，打包安装后正常）。
-          </p>
-
-          <label class="check">
-            <input v-model="s.watchClipboard" type="checkbox" />
-            <span>
-              监听剪贴板，复制链接即提示下载
-              <em>复制一个视频链接后弹「要下载吗」气泡；默认关，避免复制别的文本时误弹</em>
-            </span>
-          </label>
-
-          <h3>浏览器扩展一键推送</h3>
-          <label class="check">
-            <input v-model="s.browserPush" type="checkbox" />
-            <span>
-              启用本机接收端口
-              <em>允许浏览器扩展把当前页链接一键推给应用；只监听 127.0.0.1，本机外无法访问</em>
-            </span>
-          </label>
-          <p class="note">
-            应用会在 <code class="mono">127.0.0.1:19090</code> 上接收浏览器扩展发来的链接。
-            配合配套的浏览器扩展（右键「用 yt-dlp 下载」）使用。
-            取消勾选后应用不再监听该端口（重启生效）。
-          </p>
-
+        <!-- ───── 账号 ───── -->
+        <section v-else-if="tab === 'account'">
           <h3>Cookie</h3>
           <div class="seg">
             <button :class="{ on: s.cookieMode === 'none' }" @click="s.cookieMode = 'none'">不用</button>
