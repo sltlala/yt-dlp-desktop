@@ -5008,7 +5008,7 @@ dependencies = [
 
 [[package]]
 name = "ytdlp-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5016,7 +5016,7 @@ dependencies = [
 
 [[package]]
 name = "ytdlp-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "encoding_rs",
  "rfd",

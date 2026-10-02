@@ -1,7 +1,7 @@
 {
   "name": "ytdlp-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "基于 yt-dlp 的桌面下载工具",
   "scripts": {

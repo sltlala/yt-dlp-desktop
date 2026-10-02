@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "yt-dlp Desktop 一键推送",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "右键「用 yt-dlp 下载」，把当前页面链接推送给本机的 yt-dlp Desktop。",
   "permissions": ["contextMenus", "activeTab", "tabs", "notifications"],
   "host_permissions": ["http://127.0.0.1:19090/*"],

@@ -229,8 +229,8 @@ Windows 安装包**，挂在这次运行的 **Artifacts** 里（保留 90 天）
 
 ```bash
 # 先把 tauri.conf.json 里的 version 改好，然后
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 流程会跑测试 + 类型检查，再用 `tauri-apps/tauri-action` 构建 NSIS 安装包并挂到
