@@ -8,6 +8,7 @@ mod cookies;
 mod logfile;
 mod net;
 mod paths;
+mod push;
 mod runner;
 mod scheduler;
 mod shell;
@@ -54,6 +55,10 @@ fn default_settings() -> Value {
         "proxyPassword": "",
         // 不勾「记住」时密码只留在内存，写盘前会被抹掉（见 save_settings）
         "proxyRemember": true,
+        // ── 按站点分流（ROADMAP §F18）──
+        // per-host 规则表：{ host, proxy }。proxy 为 "" 或 "direct" 表示直连。
+        // 匹配优先级 = 数组顺序（界面上排前面的优先）。
+        "proxyRules": [],
         "aria2c": false,
         "archiveEnabled": false,
         "archivePath": paths::archive_file().to_string_lossy(),
@@ -73,6 +78,13 @@ fn default_settings() -> Value {
         // **默认关**：yt-dlp 自己默认也不做（issue #11335），它的帮助文本
         // 明确警告强制模拟会拖慢速度、降低稳定性。撞上拦截时界面上会指过来。
         "impersonate": false,
+        // ── 章节切分（ROADMAP §F15）──
+        // 长视频按章节拆成多个文件。默认关：会显著增加后处理时间。
+        "splitChapters": false,
+        // ── 下载后动作（ROADMAP §F16）──
+        // 完成后执行的命令（--exec）。留空 = 不执行。
+        // ⚠️ 会以本机权限执行，界面必须做安全确认，绝不静默启用。
+        "execCommand": "",
         // ── 系统通知（ROADMAP §F1）──
         // 任务进入终态时弹系统通知。skipped 是「已存在跳过」，不算坏事，默认不弹。
         "notifyOnComplete": true,
@@ -80,7 +92,15 @@ fn default_settings() -> Value {
         "notifyOnSkip": false,
         // ── 剪贴板监听（ROADMAP §F4）──
         // 默认关：读剪贴板是敏感操作，且容易在用户复制别的文本时误弹。
-        "watchClipboard": false
+        "watchClipboard": false,
+        // ── 界面主题（ROADMAP §F20）──
+        // light / dark / system。system = 跟随操作系统深浅色，前端监听
+        // prefers-color-scheme 实时切换。
+        "theme": "system",
+        // ── 浏览器扩展一键推送（ROADMAP §F19）──
+        // 是否启用本机 127.0.0.1:19090 接收端点。默认开：只监听回环地址，
+        // 本机外的程序连不进来，风险很低。
+        "browserPush": true
     })
 }
 
@@ -483,6 +503,30 @@ fn add_url_inner(app: &AppHandle, url: &str) -> Result<Task, String> {
     app.state::<Scheduler>().enqueue_probe(id);
 
     Ok(task)
+}
+
+/// 浏览器扩展推送的入口（ROADMAP §F19）：与 `add_url` 走同一条链路，
+/// 只是多了合法性过滤与「推送源」标记。
+///
+/// 返回 `Ok(())` 表示已入队；`Err` 表示链接无效（推送服务据此回 400）。
+pub(crate) fn push_url(app: &AppHandle, url: &str) -> Result<(), String> {
+    let url = url.trim();
+    if url.is_empty() || !ytdlp_core::is_valid_url(url) {
+        return Err("不是有效链接".into());
+    }
+    // 去重：已经在任务列表里的 URL 不重复入队。
+    let dup = app
+        .state::<AppState>()
+        .tasks
+        .lock()
+        .map(|tasks| tasks.iter().any(|t| t.url == url))
+        .unwrap_or(false);
+    if dup {
+        return Ok(());
+    }
+    let _ = add_url_inner(app, url)?;
+    logfile::info(format!("浏览器推送入队：{url}"));
+    Ok(())
 }
 
 /// 播放列表勾选完成后开始下载。
@@ -1339,6 +1383,9 @@ pub fn run() {
 
             // 探测与下载由两个独立并发池调度（DESIGN §4）。
             scheduler::spawn(app.handle().clone());
+
+            // 浏览器扩展一键推送（ROADMAP §F19）：本机回环端口接收扩展发来的 URL。
+            push::spawn(app.handle().clone());
 
             // 后台节流落库。
             //

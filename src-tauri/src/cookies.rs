@@ -401,11 +401,19 @@ mod tests {
             SEQ.fetch_add(1, Ordering::SeqCst)
         ));
         std::fs::create_dir_all(&tmp).unwrap();
+        // `set_var` 是进程全局的：跑完必须恢复旧值，否则**别的模块**的测试
+        // （例如 `paths::tests::temp_root_falls_back_when_blank` 读 `APPDATA`）
+        // 会拿到这个临时目录，断言跟着偶发失败（测试间污染）。
+        let old = std::env::var_os("APPDATA");
         std::env::set_var("APPDATA", &tmp);
 
         let result = f();
 
         let _ = std::fs::remove_dir_all(&tmp);
+        match old {
+            Some(v) => std::env::set_var("APPDATA", v),
+            None => std::env::remove_var("APPDATA"),
+        }
         drop(guard);
         result
     }

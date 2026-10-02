@@ -66,6 +66,45 @@
   --row-h: 84px;
 }
 
+/* ───────────────────────── 暗色主题（ROADMAP §F20）─────────────────────────
+ *
+ * 只在 `html[data-theme="dark"]` 下覆盖颜色变量，布局/字号/圆角全部继承。
+ * 语义色在深底上要**提亮**（与亮底「压暗」相反），否则对比度不够。
+ * 其余组件一律用 `var(--…)`，所以这里改一处全局生效——这正是当初把所有
+ * 颜色收敛到 CSS 变量的目的。
+ */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #101418;
+  --bg-elev: #161b21;
+
+  --surface: #1a2027;
+  --surface-2: #212830;
+  --surface-3: #2a333d;
+
+  --border: #2e3842;
+  --border-soft: #242d36;
+
+  --text: #e6eaf0;
+  --text-dim: #a7b0bd;
+  --text-mute: #6b7684;
+
+  --accent: #5b82f7;
+  --accent-hover: #6f92f8;
+  --accent-dim: rgba(91, 130, 247, 0.14);
+  --accent-ink: #8fb0ff;
+
+  --ok: #34c478;
+  --warn: #e8a23a;
+  --err: #ff6a5e;
+  --skip: #98a2b3;
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.6);
+}
+
 * {
   box-sizing: border-box;
 }

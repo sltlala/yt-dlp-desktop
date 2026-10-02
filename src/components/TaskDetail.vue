@@ -108,6 +108,14 @@ const rows = computed(() => {
 
 <template>
   <div class="detail">
+    <!-- 本地重复检测（ROADMAP §F17）：历史里已有同 id 的成品文件 -->
+    <div v-if="t.localDuplicate" class="dup-box">
+      <div class="dup-title">本地已有该媒体</div>
+      <div>历史记录里已有同一视频的成品文件，仍在磁盘上：</div>
+      <div class="dup-path">{{ t.localDuplicate }}</div>
+      <div class="dup-note">继续下载会再存一份（除非启用 download-archive 自动跳过）。</div>
+    </div>
+
     <!-- 嵌入告警：--embed-subs 失败是静默的，必须显式呈现（DESIGN §14.3） -->
     <div v-if="t.warnings.length" class="warn-box">
       <div class="warn-title">后处理告警</div>
@@ -286,6 +294,29 @@ const rows = computed(() => {
   margin: 0;
   padding-left: 16px;
   color: var(--text-dim);
+}
+
+.dup-box {
+  background: rgba(61, 110, 245, 0.055);
+  border: 1px solid rgba(61, 110, 245, 0.2);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.dup-title {
+  color: #3d6ef5;
+  font-weight: 650;
+  margin-bottom: 4px;
+}
+.dup-path {
+  margin: 4px 0;
+  font-family: var(--mono);
+  word-break: break-all;
+  color: var(--text-dim);
+}
+.dup-note {
+  margin-top: 4px;
 }
 
 .err-box {

@@ -362,6 +362,17 @@ async function testProxy() {
   }
 }
 
+/* ───────────────────── 按站点分流（ROADMAP §F18）───────────────────── */
+
+function addProxyRule() {
+  if (!Array.isArray(s.proxyRules)) s.proxyRules = []
+  s.proxyRules.push({ host: '', proxy: '' })
+}
+
+function removeProxyRule(i: number) {
+  s.proxyRules.splice(i, 1)
+}
+
 /* ───────────────────── yt-dlp 自更新（DESIGN §8）───────────────────── */
 
 const updateInfo = ref<UpdateInfo | null>(null)
@@ -701,6 +712,23 @@ const templateWarning = computed(() => {
       <div class="body-inner">
         <!-- ───── 常规 ───── -->
         <section v-if="tab === 'general'">
+          <h3>主题</h3>
+          <div class="radios">
+            <label class="radio">
+              <input v-model="s.theme" type="radio" value="light" />
+              <span>亮色</span>
+            </label>
+            <label class="radio">
+              <input v-model="s.theme" type="radio" value="dark" />
+              <span>暗色</span>
+            </label>
+            <label class="radio">
+              <input v-model="s.theme" type="radio" value="system" />
+              <span>跟随系统</span>
+            </label>
+          </div>
+          <p class="note">切换立即生效，颜色跟随系统深浅色自动变化。</p>
+
           <div class="field">
             <span>输出目录</span>
             <div class="path-row">
@@ -889,6 +917,8 @@ const templateWarning = computed(() => {
               <option value="best">最佳画质</option>
               <option value="maxHeight">限制分辨率</option>
               <option value="audioOnly">仅音频</option>
+              <option value="subsOnly">仅字幕</option>
+              <option value="thumbnailOnly">仅封面</option>
             </select>
           </label>
           <label v-if="s.preset === 'maxHeight'" class="field inline">
@@ -911,6 +941,14 @@ const templateWarning = computed(() => {
               <option value="wav">WAV</option>
             </select>
           </label>
+
+          <p v-if="s.preset === 'subsOnly'" class="note">
+            只下载字幕文件（不下载视频本体）。字幕语言在「嵌入」标签页里设置
+            （默认 {{ s.embed.subLangs }}）。
+          </p>
+          <p v-if="s.preset === 'thumbnailOnly'" class="note">
+            只下载封面缩略图（不下载视频本体）。
+          </p>
 
           <label class="field">
             <span>输出容器</span>
@@ -1017,6 +1055,27 @@ const templateWarning = computed(() => {
           </label>
           <p class="note warn">
             进度改由 aria2c 上报，精度略低；遇到不支持 Range 的服务器会失败，失败时自动回落原生下载。
+          </p>
+
+          <h3>章节切分</h3>
+          <label class="check">
+            <input v-model="s.splitChapters" type="checkbox" />
+            <span>按章节拆分成多个文件<em>长视频会拆成每章一个文件，显著增加后处理时间</em></span>
+          </label>
+
+          <h3>下载后动作</h3>
+          <label class="field">
+            <span>完成后执行命令<em>留空 = 不执行</em></span>
+            <input
+              v-model="s.execCommand"
+              class="mono"
+              spellcheck="false"
+              placeholder="例如：shutdown /s /t 60"
+            />
+          </label>
+          <p class="note warn">
+            ⚠️ 该命令会在下载完成后<strong>以本机权限执行</strong>。支持
+            <code class="mono">{{ '{filename}' }}</code> 占位符（每个成品文件执行一次）。请只填写你信任的命令。
           </p>
 
           <h3>下载归档</h3>
@@ -1203,6 +1262,34 @@ const templateWarning = computed(() => {
             {{ proxyProbe.summary }}
           </p>
 
+          <h3>按站点分流</h3>
+          <p class="note">
+            为特定站点指定不同的代理（例如 B 站走 A 代理、YouTube 走 B）。
+            规则按<strong>从上到下</strong>匹配，第一个命中的生效；留空 <code class="mono">proxy</code>
+            或填 <code class="mono">direct</code> 表示该站点<strong>直连</strong>。主机名支持
+            <code class="mono">*.example.com</code> 通配（也匹配裸域）。
+          </p>
+          <div v-if="s.proxyRules.length" class="proxy-rules">
+            <div v-for="(r, i) in s.proxyRules" :key="i" class="proxy-rule">
+              <input
+                v-model="r.host"
+                class="mono"
+                spellcheck="false"
+                placeholder="*.bilibili.com"
+                title="站点主机名（支持 * 通配）"
+              />
+              <input
+                v-model="r.proxy"
+                class="mono"
+                spellcheck="false"
+                placeholder="socks5://127.0.0.1:1080 或 direct"
+                title="代理 URL；留空或 direct = 直连"
+              />
+              <button class="btn sm ghost" title="删除这条规则" @click="removeProxyRule(i)">✕</button>
+            </div>
+          </div>
+          <button class="btn sm" @click="addProxyRule">+ 添加规则</button>
+
           <h3>反爬拦截</h3>
           <label class="check">
             <input v-model="s.impersonate" type="checkbox" />
@@ -1250,6 +1337,20 @@ const templateWarning = computed(() => {
               <em>复制一个视频链接后弹「要下载吗」气泡；默认关，避免复制别的文本时误弹</em>
             </span>
           </label>
+
+          <h3>浏览器扩展一键推送</h3>
+          <label class="check">
+            <input v-model="s.browserPush" type="checkbox" />
+            <span>
+              启用本机接收端口
+              <em>允许浏览器扩展把当前页链接一键推给应用；只监听 127.0.0.1，本机外无法访问</em>
+            </span>
+          </label>
+          <p class="note">
+            应用会在 <code class="mono">127.0.0.1:19090</code> 上接收浏览器扩展发来的链接。
+            配合配套的浏览器扩展（右键「用 yt-dlp 下载」）使用。
+            取消勾选后应用不再监听该端口（重启生效）。
+          </p>
 
           <h3>Cookie</h3>
           <div class="seg">
@@ -1578,6 +1679,25 @@ h3:first-child {
 }
 .sub-block.tight {
   gap: 6px;
+}
+.proxy-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0;
+}
+.proxy-rule {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr auto;
+  gap: 6px;
+  align-items: center;
+}
+.proxy-rule input {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  min-width: 0;
 }
 .two-col {
   display: grid;

@@ -6,7 +6,7 @@
 //!
 //! 只依赖 `shell32`，不引入额外的 crate。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(windows)]
 mod imp {
@@ -204,6 +204,7 @@ pub fn pick_file(initial: Option<&str>) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     /// 只验证「能调通、不 panic」：Windows 上应拿到正数，非 Windows 上 None。
     /// 不断言具体数值（磁盘空间随时在变，断言会偶发失败）。

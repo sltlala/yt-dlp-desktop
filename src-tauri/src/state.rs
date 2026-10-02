@@ -127,6 +127,11 @@ pub struct Task {
     /// - bit2 = 已关掉指纹模拟重试过
     #[serde(default)]
     pub retry_flags: u8,
+    /// 本地重复检测（ROADMAP §F17）：探测后若发现历史里已有**同 media id**
+    /// 且成品文件仍在磁盘的任务，记录那条历史任务的成品路径，供界面提示
+    /// 「本地已有」。`None` = 未检测到重复。
+    #[serde(default)]
+    pub local_duplicate: Option<String>,
 }
 
 impl Task {
@@ -162,6 +167,7 @@ impl Task {
             used_aria2c: false,
             auto_impersonate: false,
             retry_flags: 0,
+            local_duplicate: None,
         }
     }
 }

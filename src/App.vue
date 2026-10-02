@@ -64,6 +64,27 @@ watch(view, () => {
   if (store.selectMode) store.clearSelection()
 })
 
+/* ───────────────── 界面主题（ROADMAP §F20）─────────────────
+ *
+ * 颜色全在 `style.css` 的 CSS 变量里，这里只负责把 `html[data-theme]`
+ * 切成 `light` / `dark`。`system` 模式还要跟随系统深浅色实时切换——
+ * 用 `matchMedia('prefers-color-scheme: dark')` 的 change 事件。
+ */
+const systemDark = window.matchMedia('(prefers-color-scheme: dark)')
+function applyTheme() {
+  const t = store.settings?.theme ?? 'system'
+  const resolved = t === 'system' ? (systemDark.matches ? 'dark' : 'light') : t
+  document.documentElement.dataset.theme = resolved
+}
+watch(
+  () => store.settings?.theme,
+  () => applyTheme(),
+  { immediate: true },
+)
+systemDark.addEventListener('change', () => {
+  if ((store.settings?.theme ?? 'system') === 'system') applyTheme()
+})
+
 let statsTimer: number | null = null
 
 onMounted(async () => {

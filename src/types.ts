@@ -150,6 +150,11 @@ export interface Task {
    * 用 aria2c 时 yt-dlp 一条进度都不发，进度只能解析 aria2c 的输出，精度略低。
    */
   usedAria2c?: boolean
+  /**
+   * 本地重复检测（ROADMAP §F17）：探测后若发现历史里已有同 media id 且
+   * 成品文件仍在磁盘的任务，记录那条历史任务的成品路径，供界面提示。
+   */
+  localDuplicate?: string | null
 }
 
 export interface PlaylistEntry {
@@ -160,7 +165,7 @@ export interface PlaylistEntry {
   thumbnail: string | null
 }
 
-export type PresetKind = 'best' | 'maxHeight' | 'audioOnly'
+export type PresetKind = 'best' | 'maxHeight' | 'audioOnly' | 'subsOnly' | 'thumbnailOnly'
 
 export interface EmbedSettings {
   subs: boolean
@@ -219,6 +224,11 @@ export interface Settings {
   proxyPassword: string
   /** 不勾时密码只留在内存，**不会写进 config.json**。 */
   proxyRemember: boolean
+  /**
+   * 按站点分流规则（ROADMAP §F18）。匹配优先级 = 数组顺序。
+   * `proxy` 为 `""` 或 `"direct"` 表示直连。
+   */
+  proxyRules: { host: string; proxy: string }[]
   aria2c: boolean
   archiveEnabled: boolean
   archivePath: string
@@ -249,6 +259,13 @@ export interface Settings {
    * 撞上拦截时错误信息里会指到这个开关。
    */
   impersonate: boolean
+  /** 章节切分（ROADMAP §F15）：长视频按章节拆成多个文件。 */
+  splitChapters: boolean
+  /**
+   * 下载后执行命令（ROADMAP §F16）：`--exec`。留空 = 不执行。
+   * ⚠️ 会以本机权限执行，界面必须做安全确认。
+   */
+  execCommand: string
   /** 下载完成时弹系统通知（ROADMAP §F1）。 */
   notifyOnComplete: boolean
   /** 下载失败时弹系统通知。 */
@@ -257,6 +274,10 @@ export interface Settings {
   notifyOnSkip: boolean
   /** 监听剪贴板：复制链接即提示「要下载吗」（ROADMAP §F4，默认关）。 */
   watchClipboard: boolean
+  /** 界面主题（ROADMAP §F20）：light / dark / system（跟随系统）。 */
+  theme: 'light' | 'dark' | 'system'
+  /** 浏览器扩展一键推送（ROADMAP §F19）：是否启用本机回环接收端点。 */
+  browserPush: boolean
 }
 
 /** 一个可选的编码偏好。 */

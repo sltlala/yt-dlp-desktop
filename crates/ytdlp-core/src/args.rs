@@ -119,6 +119,10 @@ pub enum Preset {
     MaxHeight(u32),
     /// 仅音频。
     AudioOnly(AudioFormat),
+    /// 仅字幕（`--skip-download --write-subs`，ROADMAP §F14）。
+    SubsOnly,
+    /// 仅封面（`--skip-download --write-thumbnail`，ROADMAP §F14）。
+    ThumbnailOnly,
 }
 
 /// 翻译成 `-f` 表达式。
@@ -239,6 +243,12 @@ pub fn preset_expression_with(preset: &Preset, codec: &CodecPreference) -> Strin
         } else {
             format!("ba{a}/ba/b")
         };
+    }
+
+    // 仅字幕 / 仅封面：不下载媒体，`-f` 只影响「选哪条来拿元数据」，
+    // 用 best 即可（编码偏好对这两个场景没有意义）。
+    if matches!(preset, Preset::SubsOnly | Preset::ThumbnailOnly) {
+        return "best".to_string();
     }
 
     // 高度上限要同时加在 `bv*` 与最后的合并格式回落上
@@ -434,6 +444,13 @@ pub struct DownloadSpec {
     /// 所以看到那句话 = 这个开关就是解法；反过来，**开着还报同样的错**说明
     /// 模拟没骗过去（此时 yt-dlp 不会再给那句建议）。
     pub impersonate: bool,
+    /// 章节切分（ROADMAP §F15）：`--split-chapters`，长视频按章节拆成多个文件。
+    pub split_chapters: bool,
+    /// 下载后执行命令（ROADMAP §F16）：`--exec`。`None` = 不执行。
+    ///
+    /// ⚠️ 安全：这是用户显式填写的、会以本机权限执行的命令。宿主侧必须做
+    /// 安全确认，不能静默把它拼进参数。
+    pub exec: Option<String>,
 }
 
 /// 把勾选的下标（0-based）转成 `--playlist-items` 的值。
@@ -499,6 +516,8 @@ impl DownloadSpec {
             js: JsRuntimeOptions::default(),
             codec: CodecPreference::default(),
             impersonate: false,
+            split_chapters: false,
+            exec: None,
         }
     }
 
@@ -682,6 +701,23 @@ pub fn build_download_args(spec: &DownloadSpec) -> Vec<String> {
             a.push("--audio-quality".into());
             a.push("0".into());
         }
+        Preset::SubsOnly => {
+            // 只下字幕：不下载媒体，但要显式要求写入字幕文件。
+            a.push("--skip-download".into());
+            a.push("--write-subs".into());
+            if !spec.embed.sub_langs.trim().is_empty() {
+                a.push("--sub-langs".into());
+                a.push(spec.embed.sub_langs.trim().to_string());
+            }
+            if spec.embed.auto_subs {
+                a.push("--write-auto-subs".into());
+            }
+        }
+        Preset::ThumbnailOnly => {
+            // 只下封面：不下载媒体，只写缩略图。
+            a.push("--skip-download".into());
+            a.push("--write-thumbnail".into());
+        }
         _ => {
             let container = resolve_container(spec.container, &spec.embed);
             a.push("--merge-output-format".into());
@@ -689,8 +725,13 @@ pub fn build_download_args(spec: &DownloadSpec) -> Vec<String> {
         }
     }
 
-    push_embed_args(&mut a, spec);
-    push_downloader_args(&mut a, spec);
+    // 只下字幕/封面时没有媒体文件，嵌入与外部下载器都不适用，
+    // 否则 `--embed-subs` 会跟 `--skip-download` 打架、aria2c 会空转。
+    let partial_only = matches!(spec.preset, Preset::SubsOnly | Preset::ThumbnailOnly);
+    if !partial_only {
+        push_embed_args(&mut a, spec);
+        push_downloader_args(&mut a, spec);
+    }
     push_proxy(&mut a, spec.proxy.as_deref());
     push_cookies(&mut a, spec.cookies.as_ref());
 
@@ -705,6 +746,13 @@ pub fn build_download_args(spec: &DownloadSpec) -> Vec<String> {
     if let Some(items) = &spec.playlist_items {
         a.push("--playlist-items".into());
         a.push(items.clone());
+    }
+    if spec.split_chapters {
+        a.push("--split-chapters".into());
+    }
+    if let Some(cmd) = spec.exec.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        a.push("--exec".into());
+        a.push(cmd.to_string());
     }
 
     a.push("--".into());
@@ -857,6 +905,67 @@ mod tests {
         assert!(!build_download_args(&spec()).iter().any(|x| x == "--no-part"));
     }
 
+    // ─────────── 只下音频/字幕/封面（ROADMAP §F14）───────────
+
+    #[test]
+    fn subs_only_adds_skip_download_and_write_subs() {
+        let mut s = spec();
+        s.preset = Preset::SubsOnly;
+        let a = build_download_args(&s);
+        assert!(a.contains(&"--skip-download".to_string()));
+        assert!(a.contains(&"--write-subs".to_string()));
+        // 不下载媒体，就不该有合并格式、嵌入、aria2c
+        assert!(!a.contains(&"--merge-output-format".to_string()));
+        assert!(!a.contains(&"--embed-subs".to_string()));
+        assert!(!a.contains(&"--external-downloader".to_string()));
+    }
+
+    #[test]
+    fn thumbnail_only_adds_skip_download_and_write_thumbnail() {
+        let mut s = spec();
+        s.preset = Preset::ThumbnailOnly;
+        let a = build_download_args(&s);
+        assert!(a.contains(&"--skip-download".to_string()));
+        assert!(a.contains(&"--write-thumbnail".to_string()));
+        assert!(!a.contains(&"--merge-output-format".to_string()));
+        assert!(!a.contains(&"--embed-thumbnail".to_string()));
+    }
+
+    #[test]
+    fn subs_only_respects_sub_langs_and_auto_subs() {
+        let mut s = spec();
+        s.preset = Preset::SubsOnly;
+        s.embed.sub_langs = "zh-Hans,en".to_string();
+        s.embed.auto_subs = true;
+        let a = build_download_args(&s);
+        assert!(a.contains(&"zh-Hans,en".to_string()));
+        assert!(a.contains(&"--write-auto-subs".to_string()));
+    }
+
+    // ─────────── 章节切分 / 下载后动作（ROADMAP §F15/F16）───────────
+
+    #[test]
+    fn split_chapters_off_by_default() {
+        assert!(!build_download_args(&spec()).contains(&"--split-chapters".to_string()));
+        let mut s = spec();
+        s.split_chapters = true;
+        assert!(build_download_args(&s).contains(&"--split-chapters".to_string()));
+    }
+
+    #[test]
+    fn exec_only_when_non_empty() {
+        assert!(!build_download_args(&spec()).contains(&"--exec".to_string()));
+        let mut s = spec();
+        s.exec = Some("echo done".to_string());
+        let a = build_download_args(&s);
+        let idx = a.iter().position(|x| x == "--exec").unwrap();
+        assert_eq!(a[idx + 1], "echo done");
+        // 空白命令等价于不执行
+        let mut s2 = spec();
+        s2.exec = Some("   ".to_string());
+        assert!(!build_download_args(&s2).contains(&"--exec".to_string()));
+    }
+
     #[test]
     fn preset_expressions() {
         assert_eq!(preset_expression(&Preset::Best), "bv*+ba/b");
@@ -868,6 +977,9 @@ mod tests {
             preset_expression(&Preset::AudioOnly(AudioFormat::Mp3)),
             "ba/b"
         );
+        // 仅字幕 / 仅封面：不下载媒体，表达式退化为 best
+        assert_eq!(preset_expression(&Preset::SubsOnly), "best");
+        assert_eq!(preset_expression(&Preset::ThumbnailOnly), "best");
         // 表达式形态是硬契约：它被存进数据库用于重放（DESIGN §3）。
     }
 

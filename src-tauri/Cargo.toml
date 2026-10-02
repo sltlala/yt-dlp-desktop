@@ -20,7 +20,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["process", "io-util", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["process", "io-util", "rt", "rt-multi-thread", "sync", "time", "net"] }
 # 自更新用的最小 HTTP 客户端。
 # 刻意不用 reqwest：只需要「一次 JSON GET + 一次文件下载」，
 # ureq 的依赖树小一个数量级，且自带 rustls 不需要 OpenSSL。

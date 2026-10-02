@@ -44,6 +44,8 @@ pub fn preset_of(settings: &Value) -> Preset {
             Some("wav") => AudioFormat::Wav,
             _ => AudioFormat::Mp3,
         }),
+        Some("subsOnly") => Preset::SubsOnly,
+        Some("thumbnailOnly") => Preset::ThumbnailOnly,
         _ => Preset::Best,
     }
 }
@@ -113,6 +115,10 @@ pub fn spec_from_settings(settings: &Value, url: &str, task_id: &str) -> Downloa
     spec.codec = codec_of(settings);
     // 过 Cloudflare 拦截（默认关，见 DownloadSpec::impersonate）
     spec.impersonate = impersonate_of(settings);
+    // 章节切分（ROADMAP §F15）
+    spec.split_chapters = b("splitChapters");
+    // 下载后执行（ROADMAP §F16）。用户显式填的命令，宿主侧已做过安全确认。
+    spec.exec = s("execCommand").filter(|c| !c.trim().is_empty());
     spec
 }
 
@@ -787,12 +793,33 @@ pub fn proxy_config_of(settings: &Value) -> Option<ytdlp_core::ProxyConfig> {
 
 /// 本次请求**实际**要用的代理。`None` = 直连。
 ///
+/// 优先级（ROADMAP §F18）：
+/// 1. **按站点分流规则**（`proxyRules`）——命中 `host → direct` 直连，
+///    命中 `host → proxy` 用指定代理；
+/// 2. 全局代理 + 绕过列表（`proxy_for` 原有逻辑）。
+///
 /// 绕过列表在**宿主侧**判断，命中就干脆不传 `--proxy`。
 /// ⚠️ 不能指望 yt-dlp 自己绕：实测在给了 `--proxy` 的情况下，
 /// `no_proxy` 环境变量**不起作用**（死代理 + `no_proxy=127.0.0.1` 依然连不上）。
 pub fn proxy_for(settings: &Value, url: &str) -> Option<String> {
-    let cfg = proxy_config_of(settings)?;
     let host = ytdlp_core::host_of(url);
+
+    // ① 分流规则优先：界面上排前面的规则先匹配。
+    if !host.is_empty() {
+        if let Some(rules) = settings.get("proxyRules") {
+            let rules = ytdlp_core::parse_proxy_rules(rules);
+            if let Some(proxy) = ytdlp_core::match_proxy_rule(&rules, &host) {
+                // 空串 / "direct" 表示「这条规则命中，直连」。
+                if proxy.is_empty() || proxy.eq_ignore_ascii_case("direct") {
+                    return None;
+                }
+                return Some(proxy);
+            }
+        }
+    }
+
+    // ② 全局代理 + 绕过列表。
+    let cfg = proxy_config_of(settings)?;
     if !host.is_empty() && cfg.bypassed(&host) {
         return None;
     }
@@ -1381,12 +1408,41 @@ fn classify_error(stderr: &str, code: Option<i32>) -> String {
     format!("yt-dlp 退出码 {}", code.unwrap_or(-1))
 }
 
+/// 本地重复检测（ROADMAP §F17）：在历史任务里找「同 media id 且成品仍在磁盘」
+/// 的条目，返回其成品路径。纯函数，便于单测。
+///
+/// 判定条件：别的任务、同 `video_id`、状态是 completed/skipped、`filepath` 存在。
+fn find_local_duplicate(tasks: &[Task], task_id: &str, video_id: &str) -> Option<String> {
+    tasks.iter().find_map(|other| {
+        let hit = other.id != task_id
+            && other.video_id.as_deref() == Some(video_id)
+            && matches!(other.state.as_str(), "completed" | "skipped")
+            && other
+                .filepath
+                .as_deref()
+                .map(|p| std::path::Path::new(p).exists())
+                .unwrap_or(false);
+        hit.then(|| other.filepath.clone()).flatten()
+    })
+}
+
 /// 探测成功后写回任务，并决定下一步：等用户勾选，还是直接排队下载。
 fn apply_info(app: &AppHandle, task_id: &str, url: &str, info: ytdlp_core::MediaInfo) {
     let is_playlist = info.is_playlist && !info.entries.is_empty();
 
     {
         let st = app.state::<AppState>();
+        // 本地重复检测（ROADMAP §F17）：同 media id 且成品仍在磁盘 → 提示本地已有。
+        // 只在**拿到 media id** 时做；播放列表没有单一 media id，跳过。
+        let duplicate = if info.id.is_empty() {
+            None
+        } else {
+            st.tasks
+                .lock()
+                .ok()
+                .and_then(|tasks| find_local_duplicate(&tasks, task_id, &info.id))
+        };
+
         st.with_task(task_id, |t| {
             if !info.title.is_empty() {
                 t.title = info.title.clone();
@@ -1407,6 +1463,7 @@ fn apply_info(app: &AppHandle, task_id: &str, url: &str, info: ytdlp_core::Media
             t.size_estimate = info.size_estimate;
             // 格式表可能很长（播放列表里每个条目都有自己的），截断避免数据库膨胀
             t.formats = info.formats.iter().take(120).cloned().collect();
+            t.local_duplicate = duplicate;
             if is_playlist {
                 t.state = "selecting".into();
                 t.playlist_entries = info.entries.clone();
@@ -1738,6 +1795,56 @@ mod tests {
         assert_eq!(proxy_for(&s, "https://x.com/a"), None);
     }
 
+    // ───────── 按站点分流（ROADMAP §F18）─────────
+
+    #[test]
+    fn proxy_rule_overrides_global() {
+        let s = json!({
+            "proxyMode": "manual", "proxyHost": "127.0.0.1", "proxyPort": 7897,
+            "proxyRules": [
+                { "host": "*.bilibili.com", "proxy": "socks5://10.0.0.1:1080" },
+            ],
+        });
+        // 命中分流规则 → 用规则代理，而不是全局代理
+        assert_eq!(
+            proxy_for(&s, "https://www.bilibili.com/video/BV1").as_deref(),
+            Some("socks5://10.0.0.1:1080")
+        );
+        // 裸域也命中（*.bilibili.com 额外匹配裸域）
+        assert_eq!(
+            proxy_for(&s, "https://bilibili.com/video/BV1").as_deref(),
+            Some("socks5://10.0.0.1:1080")
+        );
+        // 未命中的站点走全局代理
+        assert_eq!(
+            proxy_for(&s, "https://www.youtube.com/watch?v=x").as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
+    }
+
+    #[test]
+    fn proxy_rule_direct_bypasses_even_with_global() {
+        let s = json!({
+            "proxyMode": "manual", "proxyHost": "127.0.0.1", "proxyPort": 7897,
+            "proxyRules": [
+                { "host": "*.corp", "proxy": "direct" },
+            ],
+        });
+        assert_eq!(proxy_for(&s, "https://git.corp/repo"), None);
+        // 其他站点照常走全局
+        assert_eq!(
+            proxy_for(&s, "https://example.com/x").as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
+    }
+
+    #[test]
+    fn proxy_rule_ignored_when_no_rules() {
+        let s = json!({ "proxyMode": "manual", "proxyHost": "h", "proxyPort": 1 });
+        // 没有 proxyRules 键时行为不变
+        assert_eq!(proxy_for(&s, "https://x.com/a").as_deref(), Some("http://h:1"));
+    }
+
     /// 空主机名 / 端口 0 时的行为。
     #[test]
     fn blank_host_or_zero_port_is_none() {
@@ -1807,5 +1914,55 @@ mod tests {
         assert_eq!(redact_proxy("http://u:secret@h:8080"), "http://u:***@h:8080");
         assert_eq!(redact_proxy("http://h:8080"), "http://h:8080");
         assert_eq!(redact_proxy("garbage"), "garbage");
+    }
+
+    // ───────── 本地重复检测（ROADMAP §F17）─────────
+
+    fn dup_task(id: &str, vid: &str, state: &str, filepath: Option<String>) -> Task {
+        let mut t = Task::new(
+            id.to_string(),
+            format!("https://example.com/{vid}"),
+            "C:/out".into(),
+            "bv*+ba/b".into(),
+        );
+        t.video_id = Some(vid.to_string());
+        t.state = state.to_string();
+        t.filepath = filepath;
+        t
+    }
+
+    #[test]
+    fn finds_local_duplicate_when_file_exists() {
+        let existing = std::env::temp_dir().join("ytdlp-dup-test.txt");
+        std::fs::write(&existing, b"x").unwrap();
+        let tasks = vec![
+            dup_task("t-1", "vid123", "completed", Some(existing.to_string_lossy().into_owned())),
+            dup_task("t-2", "other", "completed", None),
+        ];
+        // 用真实存在的文件路径
+        let found = find_local_duplicate(&tasks, "t-new", "vid123");
+        let expected = existing.to_string_lossy().into_owned();
+        assert_eq!(found.as_deref(), Some(expected.as_str()));
+        let _ = std::fs::remove_file(&existing);
+    }
+
+    #[test]
+    fn no_duplicate_when_file_gone_or_state_active() {
+        // 文件不存在 → 不算重复
+        let tasks = vec![dup_task(
+            "t-1",
+            "vid123",
+            "completed",
+            Some("Z:/definitely/missing.mp4".into()),
+        )];
+        assert_eq!(find_local_duplicate(&tasks, "t-new", "vid123"), None);
+
+        // 状态不是 completed/skipped → 不算（还在下载中的不算「已有成品」）
+        let tasks2 = vec![dup_task("t-1", "vid123", "downloading", None)];
+        assert_eq!(find_local_duplicate(&tasks2, "t-new", "vid123"), None);
+
+        // 同一个任务自己不算重复
+        let tasks3 = vec![dup_task("t-new", "vid123", "completed", None)];
+        assert_eq!(find_local_duplicate(&tasks3, "t-new", "vid123"), None);
     }
 }

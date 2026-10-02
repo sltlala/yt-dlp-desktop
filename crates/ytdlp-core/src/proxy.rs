@@ -161,6 +161,76 @@ impl fmt::Display for ProxyConfig {
     }
 }
 
+/// 一条「按站点分流」规则（ROADMAP §F18）。
+///
+/// `pattern` 是主机名通配（复用 [`matches_pattern`]，支持 `*` / `?`，
+/// 语义与 Windows 代理绕过列表一致）。`proxy` 是目标代理 URL；
+/// 空串 / `"direct"` 表示**直连**。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyRule {
+    pub pattern: String,
+    /// 目标代理 URL。`""` 或 `"direct"` = 直连。
+    pub proxy: String,
+}
+
+/// 在规则表里找第一条命中 host 的规则。
+///
+/// 返回 `Some(proxy)`：`proxy` 为 `""`/`"direct"` 时表示「这条命中了，直连」。
+/// 无命中返回 `None`（走全局代理）。
+///
+/// 匹配优先级 = 规则顺序（界面上排在前面的优先）。这里只做纯匹配，
+/// 「直接/代理」的语义由调用方翻译。
+///
+/// 语义补充（区别于 [`matches_pattern`] 的 Windows 绕过语义）：分流规则里
+/// `*.example.com` **也匹配裸域 `example.com`**——用户写分流规则时的直觉是
+/// 「整个站」，不该因为少写一个 `*` 就漏掉裸域。
+pub fn match_proxy_rule(rules: &[ProxyRule], host: &str) -> Option<String> {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    rules
+        .iter()
+        .find(|r| rule_matches(&host, &r.pattern))
+        .map(|r| r.proxy.trim().to_string())
+}
+
+/// 一条规则是否命中 host：`*.x` 额外匹配裸域 `x`。
+fn rule_matches(host: &str, pattern: &str) -> bool {
+    let pattern = pattern.trim().trim_end_matches('.').to_ascii_lowercase();
+    if pattern.is_empty() {
+        return false;
+    }
+    if matches_pattern(host, &pattern) {
+        return true;
+    }
+    // `*.example.com` 额外匹配裸域 `example.com`
+    if let Some(rest) = pattern.strip_prefix("*.") {
+        if matches_pattern(host, rest) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 把设置里的 `proxyRules` 解析成规则表。非法条目跳过，不让一条烂数据
+/// 破坏整张表。规则格式：`{ "host": "...", "proxy": "..." }`。
+pub fn parse_proxy_rules(value: &serde_json::Value) -> Vec<ProxyRule> {
+    let Some(arr) = value.as_array() else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|v| {
+            let pattern = v.get("host")?.as_str()?.trim().to_string();
+            let proxy = v.get("proxy")?.as_str()?.trim().to_string();
+            if pattern.is_empty() {
+                return None;
+            }
+            Some(ProxyRule { pattern, proxy })
+        })
+        .collect()
+}
+
 /// 通配匹配：`*` 任意多字符，`?` 任意一个字符。
 ///
 /// 语义与 Windows 的「不为以下项使用代理」一致——**`*.example.com` 只匹配子域，
@@ -463,5 +533,51 @@ mod tests {
         assert!(parse_proxy_url("   ").is_none());
         assert!(parse_proxy_url("://").is_none());
         assert!(parse_proxy_url("http://:8080").is_none());
+    }
+
+    // ───────── 按站点分流（ROADMAP §F18）─────────
+
+    #[test]
+    fn match_proxy_rule_first_match_wins() {
+        let rules = vec![
+            ProxyRule { pattern: "*.bilibili.com".into(), proxy: "http://a:1".into() },
+            ProxyRule { pattern: "bilibili.com".into(), proxy: "http://b:2".into() },
+        ];
+        // 第一个规则命中子域
+        assert_eq!(match_proxy_rule(&rules, "www.bilibili.com").as_deref(), Some("http://a:1"));
+        // 精确匹配
+        assert_eq!(match_proxy_rule(&rules, "bilibili.com").as_deref(), Some("http://a:1"));
+        // 无命中
+        assert_eq!(match_proxy_rule(&rules, "youtube.com"), None);
+    }
+
+    #[test]
+    fn match_proxy_rule_direct_means_match() {
+        let rules = vec![ProxyRule { pattern: "*.corp".into(), proxy: "direct".into() }];
+        // 命中「直连」也要返回 Some（区别于「未命中走全局」）
+        assert_eq!(match_proxy_rule(&rules, "git.corp").as_deref(), Some("direct"));
+        assert_eq!(match_proxy_rule(&rules, "other.com"), None);
+    }
+
+    #[test]
+    fn match_proxy_rule_ignores_empty_host_and_case() {
+        let rules = vec![ProxyRule { pattern: "Example.COM".into(), proxy: "p".into() }];
+        assert_eq!(match_proxy_rule(&rules, "example.com").as_deref(), Some("p"));
+        assert_eq!(match_proxy_rule(&rules, ""), None);
+    }
+
+    #[test]
+    fn parse_proxy_rules_skips_bad_entries() {
+        let v = serde_json::json!([
+            { "host": "*.bili.com", "proxy": "http://a:1" },
+            { "host": "", "proxy": "http://x" },          // 空 host，跳过
+            { "host": "youtube.com" },                     // 缺 proxy，跳过
+            { "not": "an object" },                        // 非对象，跳过
+            { "host": "*.corp", "proxy": "direct" },
+        ]);
+        let rules = parse_proxy_rules(&v);
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].pattern, "*.bili.com");
+        assert_eq!(rules[1].proxy, "direct");
     }
 }
