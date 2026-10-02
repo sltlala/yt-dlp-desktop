@@ -713,7 +713,7 @@ const templateWarning = computed(() => {
         <!-- ───── 常规 ───── -->
         <section v-if="tab === 'general'">
           <h3>主题</h3>
-          <div class="radios">
+          <div class="radios row">
             <label class="radio">
               <input v-model="s.theme" type="radio" value="light" />
               <span>亮色</span>
@@ -727,7 +727,6 @@ const templateWarning = computed(() => {
               <span>跟随系统</span>
             </label>
           </div>
-          <p class="note">切换立即生效，颜色跟随系统深浅色自动变化。</p>
 
           <div class="field">
             <span>输出目录</span>
@@ -895,32 +894,45 @@ const templateWarning = computed(() => {
           </label>
 
           <h3>并发</h3>
-          <label class="field inline">
-            <span>探测并发</span>
-            <input v-model.number="s.probeConcurrency" type="number" min="1" max="16" />
-          </label>
-          <label class="field inline">
-            <span>下载并发</span>
-            <input v-model.number="s.downloadConcurrency" type="number" min="1" max="8" />
-          </label>
-          <label class="field inline">
-            <span>同一站点并发</span>
-            <input v-model.number="s.perHostConcurrency" type="number" min="1" max="4" />
-          </label>
+          <div class="tri-col">
+            <label class="field inline">
+              <span>探测并发</span>
+              <input v-model.number="s.probeConcurrency" type="number" min="1" max="16" />
+            </label>
+            <label class="field inline">
+              <span>下载并发</span>
+              <input v-model.number="s.downloadConcurrency" type="number" min="1" max="8" />
+            </label>
+            <label class="field inline">
+              <span>同一站点并发</span>
+              <input v-model.number="s.perHostConcurrency" type="number" min="1" max="4" />
+            </label>
+          </div>
         </section>
 
         <!-- ───── 格式 ───── -->
         <section v-else-if="tab === 'format'">
-          <label class="field">
-            <span>默认画质</span>
-            <select v-model="s.preset">
-              <option value="best">最佳画质</option>
-              <option value="maxHeight">限制分辨率</option>
-              <option value="audioOnly">仅音频</option>
-              <option value="subsOnly">仅字幕</option>
-              <option value="thumbnailOnly">仅封面</option>
-            </select>
-          </label>
+          <div class="two-col">
+            <label class="field">
+              <span>默认画质</span>
+              <select v-model="s.preset">
+                <option value="best">最佳画质</option>
+                <option value="maxHeight">限制分辨率</option>
+                <option value="audioOnly">仅音频</option>
+                <option value="subsOnly">仅字幕</option>
+                <option value="thumbnailOnly">仅封面</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>输出容器</span>
+              <select v-model="s.container">
+                <option value="auto">自动（启用嵌入时用 MKV）</option>
+                <option value="mp4">MP4</option>
+                <option value="mkv">MKV</option>
+                <option value="webm">WebM</option>
+              </select>
+            </label>
+          </div>
           <label v-if="s.preset === 'maxHeight'" class="field inline">
             <span>分辨率上限</span>
             <select v-model.number="s.maxHeight">
@@ -950,15 +962,6 @@ const templateWarning = computed(() => {
             只下载封面缩略图（不下载视频本体）。
           </p>
 
-          <label class="field">
-            <span>输出容器</span>
-            <select v-model="s.container">
-              <option value="auto">自动（启用嵌入时用 MKV）</option>
-              <option value="mp4">MP4</option>
-              <option value="mkv">MKV</option>
-              <option value="webm">WebM</option>
-            </select>
-          </label>
           <!-- 只在**真的会失败**的组合下提示，平时不占版面 -->
           <p v-if="s.container === 'webm' && s.embed.thumbnail" class="note warn">
             WebM 装不下缩略图，这样组合会<strong>直接失败</strong>——请改用 MKV 或「自动」。
@@ -999,14 +1002,29 @@ const templateWarning = computed(() => {
 
         <!-- ───── 嵌入 ───── -->
         <section v-else-if="tab === 'embed'">
-          <label class="check">
-            <input v-model="s.embed.subs" type="checkbox" />
-            <span>嵌入字幕</span>
-          </label>
+          <div class="check-row">
+            <label class="check">
+              <input v-model="s.embed.subs" type="checkbox" />
+              <span>嵌入字幕</span>
+            </label>
+            <label class="check">
+              <input v-model="s.embed.thumbnail" type="checkbox" />
+              <span>嵌入缩略图</span>
+            </label>
+            <label class="check">
+              <input v-model="s.embed.metadata" type="checkbox" />
+              <span>嵌入元数据</span>
+            </label>
+          </div>
           <template v-if="s.embed.subs">
-            <label class="field">
-              <span>字幕语言<em>逗号分隔，支持 all 与 - 排除，默认 all,-live_chat,-danmaku</em></span>
-              <input v-model="s.embed.subLangs" class="mono" />
+            <label class="field inline wide">
+              <span>字幕语言</span>
+              <input
+                v-model="s.embed.subLangs"
+                class="mono"
+                spellcheck="false"
+                placeholder="all,-live_chat,-danmaku（逗号分隔，支持 - 排除）"
+              />
             </label>
             <label class="check sub">
               <input v-model="s.embed.autoSubs" type="checkbox" />
@@ -1018,19 +1036,11 @@ const templateWarning = computed(() => {
             </label>
           </template>
 
-          <label class="check">
-            <input v-model="s.embed.thumbnail" type="checkbox" />
-            <span>嵌入缩略图</span>
-          </label>
           <label v-if="s.embed.thumbnail" class="check sub">
             <input v-model="s.embed.keepThumbnailFile" type="checkbox" />
             <span>同时保留缩略图文件</span>
           </label>
 
-          <label class="check">
-            <input v-model="s.embed.metadata" type="checkbox" />
-            <span>嵌入元数据</span>
-          </label>
           <template v-if="s.embed.metadata">
             <label class="check sub">
               <input v-model="s.embed.chapters" type="checkbox" />
@@ -1645,6 +1655,16 @@ h3:first-child {
   flex-direction: column;
   gap: 4px;
 }
+/* 横排（主题三选一等）：占满一行，不换行 */
+.radios.row {
+  flex-direction: row;
+  gap: 4px;
+}
+.radios.row .radio {
+  flex: 1;
+  justify-content: center;
+  gap: 7px;
+}
 .radio {
   display: flex;
   align-items: center;
@@ -1703,6 +1723,17 @@ h3:first-child {
   display: grid;
   grid-template-columns: 1fr 120px;
   gap: 8px;
+}
+/* 三列等宽（并发三项） */
+.tri-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+/* 字幕语言这类：标签 + 输入同行，输入占满剩余宽度 */
+.field.inline.wide input {
+  width: auto;
+  flex: 1;
 }
 /* 「优先选择编码」的两个下拉：等宽并排 */
 .codec-grid {
@@ -1961,6 +1992,15 @@ textarea.mono:focus {
   font-size: var(--fs-2xs);
   color: var(--text-mute);
   line-height: 1.45;
+}
+/* 横排的勾选项（嵌入页三个主开关等） */
+.check-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+.check-row .check {
+  justify-content: center;
 }
 
 .note {
