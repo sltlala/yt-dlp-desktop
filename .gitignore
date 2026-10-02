@@ -21,6 +21,13 @@ src-tauri/gen/schemas/
 # 本地联调用的抓包 / 测试素材，最大的有 20 MB
 _scratch/
 
+# 规划 / 设计 / 进度类文档：本地保留，不进仓库
+# （DESIGN.md 与 HANDOFF.md 是架构决策与 CLI 契约，仍入库）
+ROADMAP.md
+RESUME.md
+docs/FEATURE-DESIGN.md
+docs/screenshots/
+
 # 编辑器
 .vscode/*
 !.vscode/extensions.json

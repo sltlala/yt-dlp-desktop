@@ -23,7 +23,6 @@ src-tauri/             Tauri 2 外壳：进程生命周期、持久化、命令�
                        yt-dlp.exe（Unlicense）· aria2c.exe（GPLv2，附许可证文本）
 src/                   Vue 3 前端
   components/          列表行 / 展开详情 / 设置抽屉 / 格式选择器
-docs/screenshots/      界面截图
 scripts/cdp-probe.mjs  无头浏览器诊断脚本（抓控制台错误）
 scripts/cdp-attach.mjs 附着到已运行的 WebView2，执行表达式 / 抓控制台
 scripts/cdp-shot.mjs   通过 CDP 截图（比 PrintWindow 可靠，见 DESIGN §9.1）
