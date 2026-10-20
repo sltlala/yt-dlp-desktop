@@ -144,7 +144,19 @@ const outputDirLabel = computed(() => {
  * 高度靠实测修正（展开详情后行高会变，固定行高的做法会整列错位）。
  */
 const listWrap = ref<HTMLElement | null>(null)
-const shownKeys = computed(() => shown.value.map((t) => t.id))
+/**
+ * id 序列不变时返回**同一个数组**：进度增量每 0.2 秒就会让 `shown` 重算，
+ * 若每次都给新数组，虚拟列表会跟着重算偏移表并重新测量行高（强制重排）。
+ * Vue 3.4+ 的 computed 返回值不变时不会通知下游。
+ */
+let lastShownKeys: string[] = []
+const shownKeys = computed(() => {
+  const next = shown.value.map((t) => t.id)
+  const same =
+    next.length === lastShownKeys.length && next.every((k, i) => k === lastShownKeys[i])
+  if (!same) lastShownKeys = next
+  return lastShownKeys
+})
 const taskMap = computed(() => new Map(shown.value.map((t) => [t.id, t])))
 const taskByKey = (key: string) => taskMap.value.get(key)!
 

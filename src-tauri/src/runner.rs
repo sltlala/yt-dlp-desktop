@@ -122,10 +122,6 @@ pub fn spec_from_settings(settings: &Value, url: &str, task_id: &str) -> Downloa
     spec
 }
 
-fn emit(app: &AppHandle, tasks: &[Task]) {
-    let _ = app.emit("task://update", tasks);
-}
-
 /// 任务进入终态时弹系统通知（ROADMAP §F1）。
 ///
 /// 由「设置里的三个开关」决定弹不弹：`notifyOnComplete` / `notifyOnFailure`
@@ -188,19 +184,23 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-fn refresh(app: &AppHandle) {
-    let state = app.state::<AppState>();
-    let snap = state.snapshot();
-    emit(app, &snap);
-}
-
-/// 更新单个任务并广播。
+/// 更新单个任务，并只把**这一个任务**广播给前端（`task://patch`）。
+///
+/// 进度每 0.2 秒一条、且可能多个任务并发：若每次都广播全量快照
+/// （`task://update`），就要在锁内克隆全部历史任务（各自带着格式表、
+/// 播放列表条目）再整体序列化，前端也会因整表替换而重绘每一行。
+/// 增删任务这类改变列表结构的操作仍走全量快照。
 ///
 /// `with_task` 会自动把该任务标记为「待写库」，所以这里不必手动 mark——
 /// 这正是把写入口收窄成三个方法的目的。
-fn update<F: FnOnce(&mut Task)>(app: &AppHandle, id: &str, f: F) {
-    app.state::<AppState>().with_task(id, f);
-    refresh(app);
+pub(crate) fn update<F: FnOnce(&mut Task)>(app: &AppHandle, id: &str, f: F) {
+    let changed = app.state::<AppState>().with_task(id, |t| {
+        f(t);
+        t.clone()
+    });
+    if let Some(t) = changed {
+        let _ = app.emit("task://patch", &t);
+    }
 }
 
 /// 追加一条告警（去重）并广播。
@@ -1431,19 +1431,19 @@ fn apply_info(app: &AppHandle, task_id: &str, url: &str, info: ytdlp_core::Media
     let is_playlist = info.is_playlist && !info.entries.is_empty();
 
     {
-        let st = app.state::<AppState>();
         // 本地重复检测（ROADMAP §F17）：同 media id 且成品仍在磁盘 → 提示本地已有。
         // 只在**拿到 media id** 时做；播放列表没有单一 media id，跳过。
         let duplicate = if info.id.is_empty() {
             None
         } else {
-            st.tasks
+            app.state::<AppState>()
+                .tasks
                 .lock()
                 .ok()
                 .and_then(|tasks| find_local_duplicate(&tasks, task_id, &info.id))
         };
 
-        st.with_task(task_id, |t| {
+        update(app, task_id, |t| {
             if !info.title.is_empty() {
                 t.title = info.title.clone();
             }
@@ -1474,9 +1474,6 @@ fn apply_info(app: &AppHandle, task_id: &str, url: &str, info: ytdlp_core::Media
             }
         });
     }
-
-    let st = app.state::<AppState>();
-    let _ = app.emit("task://update", st.snapshot());
 
     if is_playlist {
         // 等用户在 UI 上勾选，不自动排队下载——否则 500 集的合集会被直接下满硬盘。

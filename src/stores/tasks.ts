@@ -110,6 +110,13 @@ export const useTaskStore = defineStore('tasks', {
       if (this.ready) return
 
       try {
+        // 先订阅增量再拉全量：首帧快照之前到达的增量找不到 id 会被丢弃，
+        // 而首帧本身已是最新状态，不会漏
+        await api.onPatch((t) => {
+          const i = this.tasks.findIndex((x) => x.id === t.id)
+          // 找不到说明这条已被删除或全量快照还没到，丢弃，以免把删掉的任务复活
+          if (i >= 0) this.tasks[i] = t
+        })
         await api.onChange((tasks) => {
           this.tasks = tasks
         })

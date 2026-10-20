@@ -769,8 +769,9 @@ fn remove_from_archive(state: State<AppState>, ids: Vec<String>) -> Result<usize
 
 /// 删除单条记录的成品文件。**独立动作，永不自动执行**（DESIGN §13.2）。
 #[tauri::command(async)]
-fn delete_file(state: State<AppState>, id: String) -> Result<(), String> {
+fn delete_file(app: AppHandle, id: String) -> Result<(), String> {
     let path = {
+        let state = app.state::<AppState>();
         let tasks = state.tasks.lock().map_err(|e| e.to_string())?;
         tasks
             .iter()
@@ -782,7 +783,7 @@ fn delete_file(state: State<AppState>, id: String) -> Result<(), String> {
     };
     match std::fs::remove_file(&p) {
         Ok(_) => {
-            state.with_task(&id, |t| t.filepath = None);
+            runner::update(&app, &id, |t| t.filepath = None);
             Ok(())
         }
         // 文件可能正被播放器占用 —— 必须明确报错而不是静默失败。
@@ -854,11 +855,10 @@ fn relocate_file(
     })?;
 
     let new_path = dst.to_string_lossy().into_owned();
-    app.state::<AppState>().with_task(&id, |t| {
+    runner::update(&app, &id, |t| {
         t.filepath = Some(new_path.clone());
         t.output_dir = dir.to_string_lossy().into_owned();
     });
-    let _ = app.emit("task://update", app.state::<AppState>().snapshot());
 
     Ok(new_path)
 }

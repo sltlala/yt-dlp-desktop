@@ -28,6 +28,7 @@ export function isTauri(): boolean {
 }
 
 type Listener = (tasks: Task[]) => void
+type PatchListener = (task: Task) => void
 
 export interface SchedulerStats {
   probing: number
@@ -56,6 +57,12 @@ const tauriBackend = {
     l(await invoke<Task[]>('list_tasks'))
     return un
   },
+  /**
+   * 单个任务的增量更新（进度、后处理、告警等高频事件）。
+   *
+   * 增删任务等改变列表结构的变化仍走 `onChange` 的全量快照。
+   */
+  onPatch: (l: PatchListener) => listen<Task>('task://patch', (e) => l(e.payload)),
   addUrl: (url: string) => invoke<Task>('add_url', { url }),
   /** 批量添加（多行粘贴 / 拖入列表）。返回成功条数与失败明细（ROADMAP §F3）。 */
   addUrls: (urls: string[]) =>
@@ -761,6 +768,8 @@ export const api = isTauri()
   ? tauriBackend
   : {
       onChange: (l: Listener) => Promise.resolve(mock().onChange(l)),
+      // 演示后端每次都推全量快照，用不到增量通道
+      onPatch: (_l: PatchListener) => Promise.resolve(() => {}),
       addUrl: (url: string) => mock().addUrl(url),
       addUrls: (urls: string[]) => mock().addUrls(urls),
       pause: (id: string) => mock().pause(id),
