@@ -22,10 +22,10 @@ jobs:
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # 不写 workspaces：默认就是仓库根的 target/（cargo workspace 的 target 在根上），
+      # 写成 src-tauri 会去缓存一个不存在的 src-tauri/target/，每次都冷编译
       - name: 缓存 Rust 构建产物
         uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - name: 安装前端依赖
         run: npm ci
@@ -62,8 +62,6 @@ jobs:
       # 没有缓存每次都要多花好几分钟
       - name: 缓存 Rust 构建产物
         uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - name: 安装前端依赖
         run: npm ci

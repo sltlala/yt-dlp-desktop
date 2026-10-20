@@ -33,8 +33,6 @@ jobs:
       # 缓存 target/，否则每次都要从源码编译 SQLite（rusqlite 的 bundled 特性）
       - name: 缓存 Rust 构建产物
         uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - name: 安装前端依赖
         run: npm ci
