@@ -143,7 +143,7 @@ pub fn disk_free_bytes(path: &str) -> Option<u64> {
         } else {
             p
         };
-        return disk_free_bytes_win(target);
+        disk_free_bytes_win(target)
     }
     #[cfg(not(windows))]
     {
@@ -211,9 +211,9 @@ mod tests {
     #[test]
     fn disk_free_bytes_does_not_panic() {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        match disk_free_bytes(&cwd.to_string_lossy()) {
-            Some(v) => assert!(v > 0, "剩余空间应为正数，实际 {v}"),
-            None => {} // 非 Windows 或 API 失败，允许
+        // 非 Windows 或 API 失败时为 None，允许
+        if let Some(v) = disk_free_bytes(&cwd.to_string_lossy()) {
+            assert!(v > 0, "剩余空间应为正数，实际 {v}");
         }
         // 不存在的路径也应返回 None 或正常值，而不是 panic
         let _ = disk_free_bytes("Z:\\definitely\\not\\exist");

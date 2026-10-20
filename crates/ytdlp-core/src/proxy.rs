@@ -30,7 +30,8 @@ impl ProxyProtocol {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    /// 不认识的取值一律回落到 HTTP，所以不实现会失败的 `FromStr`。
+    pub fn parse_lossy(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "socks5" | "socks5h" | "socks" => ProxyProtocol::Socks5h,
             _ => ProxyProtocol::Http,
@@ -316,7 +317,7 @@ pub fn parse_proxy_url(raw: &str) -> Option<ProxyConfig> {
     if host.is_empty() {
         return None;
     }
-    let protocol = ProxyProtocol::from_str(scheme);
+    let protocol = ProxyProtocol::parse_lossy(scheme);
     let (user, password) = match creds {
         Some(c) => match c.split_once(':') {
             Some((u, p)) => (percent_decode(u), percent_decode(p)),

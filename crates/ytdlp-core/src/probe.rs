@@ -136,7 +136,7 @@ fn pick_thumbnail(v: &Value) -> Option<String> {
             // 数组里也可能带 `data:` 内联缩略图
             .or_else(|| arr.iter().rev().find_map(|t| as_str(t, "data")))
     };
-    url.map(|u| https_thumbnail(u))
+    url.map(https_thumbnail)
 }
 
 /// 把缩略图 URL 升级成 `https://`（若是 `http://`）。

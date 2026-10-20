@@ -435,8 +435,7 @@ pub fn parse_filepath_file(content: &str) -> Option<String> {
     content
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .next_back()
+        .rfind(|l| !l.is_empty())
         .map(str::to_string)
 }
 

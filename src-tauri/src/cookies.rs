@@ -287,7 +287,7 @@ pub fn list_browsers() -> Vec<BrowserChoice> {
                     .map(|d| chromium_profiles(&d))
                     .unwrap_or_default()
             };
-            profiles.sort_by(|a, b| b.last_used.cmp(&a.last_used));
+            profiles.sort_by_key(|p| std::cmp::Reverse(p.last_used));
 
             // Opera 不支持 profile（与 yt-dlp 的 browsers_without_profiles 一致）
             let supports_profiles = info.supports_profiles && info.name != "safari";

@@ -742,7 +742,7 @@ pub fn proxy_config_of(settings: &Value) -> Option<ytdlp_core::ProxyConfig> {
                 .get("proxyPort")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u16;
-            let protocol = ProxyProtocol::from_str(&s("proxyProtocol"));
+            let protocol = ProxyProtocol::parse_lossy(&s("proxyProtocol"));
 
             // 结构化字段还空着但旧字段有值 → 用旧字段兜底
             let (host, port, protocol, user, password) = if host.trim().is_empty() {
