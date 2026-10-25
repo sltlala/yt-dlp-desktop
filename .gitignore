@@ -28,6 +28,9 @@ RESUME.md
 docs/FEATURE-DESIGN.md
 docs/screenshots/
 
+# 本地一键启动器（含本机路径与进程判断，只对自己有用）
+启动.bat
+
 # 编辑器
 .vscode/*
 !.vscode/extensions.json
