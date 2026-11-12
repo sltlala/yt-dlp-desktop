@@ -381,3 +381,6 @@ export interface FormatOption {
   tbr: number | null
   note: string
 }
+
+/** 设置页的分页。从别处跳进设置时用它直接落到相关的那一页。 */
+export type SettingsTab = 'general' | 'format' | 'network' | 'account' | 'download'

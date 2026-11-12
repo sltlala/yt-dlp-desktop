@@ -451,6 +451,8 @@ pub struct DownloadSpec {
     /// ⚠️ 安全：这是用户显式填写的、会以本机权限执行的命令。宿主侧必须做
     /// 安全确认，不能静默把它拼进参数。
     pub exec: Option<String>,
+    /// ffmpeg 所在目录（`--ffmpeg-location`）。`None` = 交给 yt-dlp 自己在 PATH 上找。
+    pub ffmpeg_location: Option<PathBuf>,
 }
 
 /// 把勾选的下标（0-based）转成 `--playlist-items` 的值。
@@ -518,6 +520,24 @@ impl DownloadSpec {
             impersonate: false,
             split_chapters: false,
             exec: None,
+            ffmpeg_location: None,
+        }
+    }
+
+    /// 这次下载是否离不开 ffmpeg。
+    ///
+    /// 下载命令带着 `--no-warnings`，缺 ffmpeg 时 yt-dlp 那句「无法合并」的
+    /// 警告会被吞掉，而它的后果是**静默降级**到预合并的低画质。所以宿主要
+    /// 自己判断，缺了就给任务挂告警。
+    pub fn needs_ffmpeg(&self) -> bool {
+        match self.preset {
+            Preset::SubsOnly | Preset::ThumbnailOnly => false,
+            Preset::AudioOnly(_) => true,
+            _ => {
+                self.effective_format_expression().contains('+')
+                    || self.embed.any()
+                    || self.split_chapters
+            }
         }
     }
 
@@ -754,6 +774,10 @@ pub fn build_download_args(spec: &DownloadSpec) -> Vec<String> {
         a.push("--exec".into());
         a.push(cmd.to_string());
     }
+    if let Some(dir) = &spec.ffmpeg_location {
+        a.push("--ffmpeg-location".into());
+        a.push(dir.display().to_string());
+    }
 
     a.push("--".into());
     a.push(spec.url.clone());
@@ -950,6 +974,40 @@ mod tests {
         let mut s = spec();
         s.split_chapters = true;
         assert!(build_download_args(&s).contains(&"--split-chapters".to_string()));
+    }
+
+    #[test]
+    fn ffmpeg_location_passed_when_known() {
+        assert!(!build_download_args(&spec()).contains(&"--ffmpeg-location".to_string()));
+        let mut s = spec();
+        s.ffmpeg_location = Some(PathBuf::from("C:/ad/bin"));
+        let a = build_download_args(&s);
+        let i = a.iter().position(|x| x == "--ffmpeg-location").expect("应传 --ffmpeg-location");
+        assert_eq!(PathBuf::from(&a[i + 1]), PathBuf::from("C:/ad/bin"));
+        // 必须在 `--` 之前，否则会被当成 URL
+        assert!(i < a.iter().position(|x| x == "--").unwrap());
+    }
+
+    #[test]
+    fn needs_ffmpeg_by_preset_and_options() {
+        let mut s = spec();
+        s.preset = Preset::Best;
+        assert!(s.needs_ffmpeg(), "最佳画质是 bv+ba，要合并");
+
+        s.preset = Preset::AudioOnly(AudioFormat::Mp3);
+        assert!(s.needs_ffmpeg(), "转 mp3 要 ffmpeg");
+
+        s.preset = Preset::SubsOnly;
+        assert!(!s.needs_ffmpeg());
+        s.preset = Preset::ThumbnailOnly;
+        assert!(!s.needs_ffmpeg());
+
+        // 用户显式选了一个已封装的单格式，不合并、不嵌入 → 不需要
+        s.preset = Preset::Best;
+        s.format_override = Some("18".into());
+        assert!(!s.needs_ffmpeg());
+        s.split_chapters = true;
+        assert!(s.needs_ffmpeg(), "按章节切分要 ffmpeg");
     }
 
     #[test]

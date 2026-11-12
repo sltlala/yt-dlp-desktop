@@ -30,6 +30,17 @@ export function isTauri(): boolean {
 type Listener = (tasks: Task[]) => void
 type PatchListener = (task: Task) => void
 
+export interface ToolInfo {
+  found: boolean
+  path: string | null
+  version: string | null
+}
+
+export interface DownloadProgress {
+  done: number
+  total: number | null
+}
+
 export interface SchedulerStats {
   probing: number
   probeQueued: number
@@ -119,6 +130,12 @@ const tauriBackend = {
   /** aria2c 的落点（随包副本 / AppData / PATH 上哪一份）。 */
   aria2cInfo: () =>
     invoke<{ found: boolean; path: string | null; version: string | null }>('aria2c_info'),
+  /** ffmpeg 的落点。找不到时高画质合并、音频转换、嵌入都不可用。 */
+  ffmpegInfo: () => invoke<ToolInfo>('ffmpeg_info'),
+  /** 一键下载 ffmpeg 到 AppData。返回结果说明；进度走 `onFfmpegProgress`。 */
+  installFfmpeg: () => invoke<string>('install_ffmpeg'),
+  onFfmpegProgress: (l: (p: DownloadProgress) => void) =>
+    listen<DownloadProgress>('ffmpeg://progress', (e) => l(e.payload)),
   /** 播放列表勾选完成后开始下载（用 --playlist-items 交给 yt-dlp）。 */
   startPlaylist: (id: string, indices: number[]) =>
     invoke<void>('start_playlist', { id, indices }),
@@ -485,6 +502,31 @@ class MockBackend {
     return { found: true, path: '(演示模式)\\aria2c.exe', version: 'aria2 version 1.37.0' }
   }
 
+  /** 演示模式默认「没装」，好让缺失提示和一键下载的界面能被看到。 */
+  private ffmpegInstalled = false
+  private ffmpegListeners = new Set<(p: DownloadProgress) => void>()
+
+  async ffmpegInfo(): Promise<ToolInfo> {
+    return this.ffmpegInstalled
+      ? { found: true, path: '(演示模式)\\ffmpeg.exe', version: 'ffmpeg version N-demo' }
+      : { found: false, path: null, version: null }
+  }
+
+  async installFfmpeg(): Promise<string> {
+    const total = 140 * 1024 * 1024
+    for (let done = 0; done <= total; done += total / 20) {
+      for (const l of this.ffmpegListeners) l({ done, total })
+      await new Promise((r) => setTimeout(r, 80))
+    }
+    this.ffmpegInstalled = true
+    return '已安装 ffmpeg version N-demo（演示模式）'
+  }
+
+  onFfmpegProgress(l: (p: DownloadProgress) => void): () => void {
+    this.ffmpegListeners.add(l)
+    return () => this.ffmpegListeners.delete(l)
+  }
+
   async listTasks(): Promise<Task[]> {
     return structuredClone(this.tasks)
   }
@@ -793,6 +835,10 @@ export const api = isTauri()
       saveSettings: (s: Settings) => mock().saveSettings(s),
       ytdlpInfo: () => mock().ytdlpInfo(),
       aria2cInfo: () => mock().aria2cInfo(),
+      ffmpegInfo: () => mock().ffmpegInfo(),
+      installFfmpeg: () => mock().installFfmpeg(),
+      onFfmpegProgress: (l: (p: DownloadProgress) => void) =>
+        Promise.resolve(mock().onFfmpegProgress(l)),
       listTasks: () => mock().listTasks(),
       startPlaylist: (id: string, indices: number[]) => mock().startPlaylist(id, indices),
       schedulerStats: () => mock().schedulerStats(),

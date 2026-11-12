@@ -5,6 +5,7 @@
 
 mod clipboard;
 mod cookies;
+mod ffmpeg;
 mod logfile;
 mod net;
 mod paths;
@@ -1275,6 +1276,36 @@ fn aria2c_info() -> Value {
     })
 }
 
+/// ffmpeg 可执行文件信息，供设置页展示与主界面的「缺少 ffmpeg」提示。
+#[tauri::command(async)]
+fn ffmpeg_info() -> Value {
+    let (path, version) = paths::ffmpeg_status();
+    json!({
+        "found": path.is_some(),
+        "path": path,
+        "version": version,
+    })
+}
+
+/// 一键下载 ffmpeg 到 `<AppData>/bin/`。下载进度经 `ffmpeg://progress` 推给前端。
+#[tauri::command]
+async fn install_ffmpeg(app: AppHandle) -> Result<String, String> {
+    let settings = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or(Value::Null);
+    let proxy = runner::proxy_of(&settings);
+    tauri::async_runtime::spawn_blocking(move || {
+        ffmpeg::install(proxy.as_deref(), |done, total| {
+            let _ = app.emit("ffmpeg://progress", json!({ "done": done, "total": total }));
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// yt-dlp 可执行文件信息，供设置页展示与「检查更新」使用。
 #[tauri::command]
 async fn ytdlp_info(state: State<'_, AppState>) -> Result<Value, String> {
@@ -1369,6 +1400,10 @@ pub fn run() {
                 Some(p) => logfile::info(format!("aria2c: {}", p.display())),
                 None => logfile::info("aria2c: 未找到（会用内置下载器）"),
             }
+            match paths::resolve_ffmpeg() {
+                Some(p) => logfile::info(format!("ffmpeg: {}", p.display())),
+                None => logfile::warn("ffmpeg: 未找到（无法合并高画质音视频，可在设置里一键下载）"),
+            }
 
             // 恢复下载历史，并把崩溃时残留的进行中任务重置为 paused（DESIGN §5.3）。
             if let Err(e) = state.init_db(&paths::db_file()) {
@@ -1430,6 +1465,8 @@ pub fn run() {
             probe_formats,
             ytdlp_info,
             aria2c_info,
+            ffmpeg_info,
+            install_ffmpeg,
             list_cookie_profiles,
             import_cookie_profile,
             delete_cookie_profile,

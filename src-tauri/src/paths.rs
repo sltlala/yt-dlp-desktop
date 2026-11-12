@@ -163,9 +163,10 @@ pub fn task_temp_dir_in(root: &std::path::Path, task_id: &str) -> PathBuf {
     root.join(task_id)
 }
 
-/// 已解析并**验证可用**的路径缓存（两个工具各一份）。
+/// 已解析并**验证可用**的路径缓存（每个工具各一份）。
 static RESOLVED_YTDLP: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 static RESOLVED_ARIA2C: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+static RESOLVED_FFMPEG: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
 /// 真正跑一次 `--version` 验证可执行文件能用。
 ///
@@ -207,6 +208,23 @@ fn probe_aria2c(exe: &std::path::Path) -> bool {
                 && crate::text::decode_console(&o.stdout)
                     .to_ascii_lowercase()
                     .contains("aria2 version")
+        })
+        .unwrap_or(false)
+}
+
+/// ffmpeg 的可用性验证。输出首行形如 `ffmpeg version 7.1-...`。
+fn probe_ffmpeg(exe: &std::path::Path) -> bool {
+    std::process::Command::new(exe)
+        .arg("-version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|o| {
+            o.status.success()
+                && crate::text::decode_console(&o.stdout)
+                    .to_ascii_lowercase()
+                    .starts_with("ffmpeg version")
         })
         .unwrap_or(false)
 }
@@ -283,12 +301,47 @@ pub fn resolve_aria2c() -> Option<PathBuf> {
     resolve_tool(locate::Tool::Aria2c, &RESOLVED_ARIA2C, probe_aria2c)
 }
 
+/// 按优先级解析 ffmpeg，**并验证它确实能运行**。
+///
+/// AppData 下的那份来自设置页的一键下载，所以同样排在 PATH 之前。
+pub fn resolve_ffmpeg() -> Option<PathBuf> {
+    resolve_tool(locate::Tool::Ffmpeg, &RESOLVED_FFMPEG, probe_ffmpeg)
+}
+
 /// 清空已解析路径的缓存。
 ///
 /// 自更新替换掉 exe 之后必须调用，否则会继续用缓存里的旧路径/旧验证结果。
 pub fn invalidate_ytdlp_cache() {
     let mut guard = RESOLVED_YTDLP.lock().unwrap_or_else(|e| e.into_inner());
     *guard = None;
+}
+
+/// 一键下载装好 ffmpeg 后调用：缓存里可能是 PATH 上的那份，
+/// 不清掉的话要重启才会改用 AppData 下的新副本。
+pub fn invalidate_ffmpeg_cache() {
+    let mut guard = RESOLVED_FFMPEG.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
+}
+
+/// ffmpeg 的版本与落点，给设置页与诊断用。
+pub fn ffmpeg_status() -> (Option<String>, Option<String>) {
+    let Some(p) = resolve_ffmpeg() else {
+        return (None, None);
+    };
+    let version = std::process::Command::new(&p)
+        .arg("-version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .map(|o| crate::text::decode_console(&o.stdout))
+        .and_then(|s| {
+            // 首行很长（带编译器信息），只留到「Copyright」之前
+            s.lines()
+                .next()
+                .map(|l| l.split(" Copyright").next().unwrap_or(l).trim().to_string())
+        });
+    (Some(p.display().to_string()), version)
 }
 
 /// 探测结果：给设置页与诊断用。

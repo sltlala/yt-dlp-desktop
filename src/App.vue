@@ -4,6 +4,7 @@ import { useTaskStore, type Filter } from './stores/tasks'
 import AddUrlBar from './components/AddUrlBar.vue'
 import TaskRow from './components/TaskRow.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import type { SettingsTab } from './types'
 import { useVirtualList } from './composables/useVirtualList'
 import { fmtBytes, fmtSpeed, shortenPath } from './utils'
 import { api, isTauri } from './ipc'
@@ -24,6 +25,13 @@ const panel = new URLSearchParams(window.location.search).get('panel')
  * 是同一层级的导航目标，用两种不同的交互承载同一层级的东西会让人困惑。
  */
 const view = ref<'tasks' | 'settings'>(panel === 'settings' ? 'settings' : 'tasks')
+/** 从别处（如「缺少 ffmpeg」横幅）跳进设置时，直接落在相关的那一页。 */
+const settingsTab = ref<SettingsTab | undefined>(undefined)
+
+function openSettings(tab?: SettingsTab) {
+  settingsTab.value = tab
+  view.value = 'settings'
+}
 
 function showTasks(f: Filter) {
   store.filter = f
@@ -97,6 +105,7 @@ onMounted(async () => {
   statsTimer = window.setInterval(() => store.refreshStats(), 1500)
   // 磁盘空间预估（ROADMAP §F6）：任务增删/状态变化后重算。
   await store.checkDiskSpace()
+  await store.loadFfmpeg()
 })
 
 onUnmounted(() => {
@@ -304,7 +313,7 @@ watch(
         <button
           class="nav-item"
           :class="{ active: view === 'settings' }"
-          @click="view = 'settings'"
+          @click="openSettings()"
         >
           <span>设置</span>
         </button>
@@ -331,6 +340,7 @@ watch(
       <!-- 设置是主区的一个页面，不是浮层 -->
       <SettingsPanel
         v-if="view === 'settings' && store.settings"
+        :initial-tab="settingsTab"
         @close="view = 'tasks'"
       />
 
@@ -404,6 +414,15 @@ watch(
         <div v-if="diskWarn" class="disk-banner">
           <span class="db-icon">⛔</span>
           <span class="db-text">{{ diskWarn }}</span>
+        </div>
+
+        <!-- 缺 ffmpeg 会让高画质静默降级，必须在主界面说出来 -->
+        <div v-if="store.ffmpeg && !store.ffmpeg.found" class="disk-banner">
+          <span class="db-icon">⚠️</span>
+          <span class="db-text">
+            未找到 ffmpeg：高画质视频会降级为低画质，音频转换和字幕/封面嵌入也不可用。
+          </span>
+          <button class="btn sm primary" @click="openSettings('download')">去下载</button>
         </div>
 
         <div ref="listWrap" class="list-wrap">

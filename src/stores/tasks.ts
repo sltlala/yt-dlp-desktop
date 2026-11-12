@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { api, type SchedulerStats } from '../ipc'
+import { api, type DownloadProgress, type SchedulerStats, type ToolInfo } from '../ipc'
 import { ACTIVE_STATES, type Settings, type Task } from '../types'
 
 export type Filter = 'all' | 'active' | 'completed' | 'failed'
@@ -57,6 +57,12 @@ export const useTaskStore = defineStore('tasks', {
     refreshing: false,
     /** 磁盘空间预估结果（ROADMAP §F6）。null 表示尚未检查。 */
     diskReport: null as { freeBytes: number | null; neededBytes: number | null; warn: boolean } | null,
+    /** ffmpeg 落点。null = 尚未检查（此时不该弹「缺少 ffmpeg」）。 */
+    ffmpeg: null as ToolInfo | null,
+    /** 一键下载 ffmpeg 的进度；null = 没在下载。 */
+    ffmpegInstall: null as DownloadProgress | null,
+    /** 一键下载的结果说明（成功或失败原因）。 */
+    ffmpegInstallMsg: null as { ok: boolean; text: string } | null,
   }),
 
   getters: {
@@ -309,6 +315,33 @@ export const useTaskStore = defineStore('tasks', {
       } catch (e) {
         console.error('[startPlaylist] 失败', e)
         this.lastError = `开始下载失败：${String(e)}`
+      }
+    },
+
+    async loadFfmpeg() {
+      try {
+        this.ffmpeg = await api.ffmpegInfo()
+      } catch {
+        /* 取不到就当没检查过，不误报缺失 */
+      }
+    },
+
+    async installFfmpeg() {
+      if (this.ffmpegInstall) return
+      this.ffmpegInstall = { done: 0, total: null }
+      this.ffmpegInstallMsg = null
+      const un = await api.onFfmpegProgress((p) => {
+        this.ffmpegInstall = p
+      })
+      try {
+        const text = await api.installFfmpeg()
+        this.ffmpegInstallMsg = { ok: true, text }
+      } catch (e) {
+        this.ffmpegInstallMsg = { ok: false, text: String(e) }
+      } finally {
+        un()
+        this.ffmpegInstall = null
+        await this.loadFfmpeg()
       }
     },
 

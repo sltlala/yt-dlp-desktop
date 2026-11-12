@@ -9,16 +9,18 @@ import type {
   DataDirInfo,
   JsRuntimeInfo,
   Settings,
+  SettingsTab,
   TempDirInUse,
 } from '../types'
-import { deepClone, ellipsizePath, fmtTime } from '../utils'
+import { deepClone, ellipsizePath, fmtBytes, fmtTime } from '../utils'
 
+const props = defineProps<{ initialTab?: SettingsTab }>()
 const emit = defineEmits<{ close: [] }>()
 const store = useTaskStore()
 
 // store.settings 是 Vue Proxy，必须用 deepClone 而非 structuredClone。
 const s = reactive<Settings>(deepClone(store.settings!))
-const tab = ref<'general' | 'format' | 'network' | 'account' | 'download'>('general')
+const tab = ref<SettingsTab>(props.initialTab ?? 'general')
 const saved = ref(false)
 
 /* ───────────────────── Cookie（DESIGN §6）───────────────────── */
@@ -117,6 +119,7 @@ onMounted(() => {
   void loadBrowsers()
   void loadJsRuntimes()
   void loadAria2c()
+  void store.loadFfmpeg()
   void loadCodecChoices()
   void loadDataDir()
   void loadTempInUse()
@@ -1184,6 +1187,41 @@ const templateWarning = computed(() => {
           <p v-else class="path-warn">
             没有找到可用的 aria2c——勾了「多线程下载」也会自动回落到内置下载器，
             并在任务详情里留一条提示。
+          </p>
+
+          <h3>ffmpeg（合并 / 转码）</h3>
+          <p v-if="store.ffmpeg?.found" class="sub-line">
+            {{ store.ffmpeg.version }}<br />
+            <code class="mono">{{ ellipsizePath(store.ffmpeg.path ?? '', 76) }}</code>
+          </p>
+          <p v-else-if="store.ffmpeg" class="path-warn">
+            没有找到 ffmpeg：高画质视频的音视频无法合并（会降级为低画质），
+            也无法转换音频格式、嵌入字幕和封面。
+          </p>
+          <div class="row-inline test-row">
+            <button
+              class="btn sm"
+              :class="{ primary: store.ffmpeg && !store.ffmpeg.found }"
+              :disabled="!!store.ffmpegInstall"
+              @click="store.installFfmpeg()"
+            >
+              {{ store.ffmpegInstall ? '下载中…' : store.ffmpeg?.found ? '重新下载' : '一键下载 ffmpeg' }}
+            </button>
+            <span v-if="store.ffmpegInstall" class="ver mono">
+              {{ fmtBytes(store.ffmpegInstall.done) }}
+              <template v-if="store.ffmpegInstall.total"> / {{ fmtBytes(store.ffmpegInstall.total) }}</template>
+            </span>
+          </div>
+          <p class="note">
+            来自 yt-dlp 官方维护的 FFmpeg-Builds（约 140 MB，GPL），装到数据目录的 bin 下，
+            走当前代理设置。也可以自己装好并加入 PATH。
+          </p>
+          <p
+            v-if="store.ffmpegInstallMsg"
+            class="res"
+            :class="store.ffmpegInstallMsg.ok ? 'ok' : 'bad'"
+          >
+            {{ store.ffmpegInstallMsg.text }}
           </p>
 
           <h3>yt-dlp 版本</h3>

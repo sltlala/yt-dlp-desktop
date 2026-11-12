@@ -20,6 +20,9 @@ pub enum Tool {
     YtDlp,
     /// 外部下载器。GPLv2，随包分发——见 `binaries/README-third-party.md`。
     Aria2c,
+    /// 合并音视频、提取音频、嵌入字幕/封面都靠它。**不随包分发**
+    /// （体积大且是 GPL），由用户在设置里一键下载到 AppData，或用 PATH 上的。
+    Ffmpeg,
 }
 
 impl Tool {
@@ -29,6 +32,8 @@ impl Tool {
             (Tool::YtDlp, false) => "yt-dlp",
             (Tool::Aria2c, true) => "aria2c.exe",
             (Tool::Aria2c, false) => "aria2c",
+            (Tool::Ffmpeg, true) => "ffmpeg.exe",
+            (Tool::Ffmpeg, false) => "ffmpeg",
         }
     }
 
@@ -37,6 +42,7 @@ impl Tool {
         match self {
             Tool::YtDlp => "yt-dlp",
             Tool::Aria2c => "aria2c",
+            Tool::Ffmpeg => "ffmpeg",
         }
     }
 }
@@ -235,6 +241,15 @@ mod tests {
             |c| c.starts_with("C:/inst"),
         );
         assert!(found.unwrap().starts_with("C:/inst"));
+    }
+
+    #[test]
+    fn ffmpeg_uses_the_same_lookup_order() {
+        let ad = p("C:/ad");
+        let c = candidates_for(Tool::Ffmpeg, Some(&ad), Some(&p("C:/inst")), Some("C:/tools"));
+        let name = Tool::Ffmpeg.exe_name();
+        assert_eq!(c[0], appdata_bin_dir(&ad).join(name), "一键下载的副本在 AppData，必须排第一");
+        assert!(c.contains(&p("C:/tools").join(name)));
     }
 
     #[test]

@@ -265,6 +265,23 @@ fn prepare_aria2c(app: &AppHandle, task_id: &str, spec: &mut DownloadSpec) -> Op
     }
 }
 
+/// 落定 ffmpeg 的位置（`--ffmpeg-location`）。
+///
+/// 这次下载用得上它却找不到时给任务挂告警：下载命令带 `--no-warnings`，
+/// yt-dlp 自己那句「无法合并」会被吞掉，而后果是**静默降级**成低画质，
+/// 不说一声的话用户只会觉得「怎么选了 1080p 下来是 360p」。
+fn prepare_ffmpeg(app: &AppHandle, task_id: &str, spec: &mut DownloadSpec) {
+    match crate::paths::resolve_ffmpeg() {
+        Some(p) => spec.ffmpeg_location = p.parent().map(PathBuf::from),
+        None if spec.needs_ffmpeg() => push_warning(
+            app,
+            task_id,
+            "未找到 ffmpeg：画质会降级，可在「设置 → 下载器」一键下载",
+        ),
+        None => {}
+    }
+}
+
 /// 运行一个下载任务。返回最终状态字符串。
 pub async fn run_download(app: AppHandle, task_id: String) {
     let (url, playlist_items, format_override, auto_impersonate, retry_flags) = {
@@ -321,6 +338,7 @@ pub async fn run_download(app: AppHandle, task_id: String) {
 
     // aria2c 的落点必须在拼参数**之前**确定（见 DESIGN §11.7）。
     let aria2c_dir = prepare_aria2c(&app, &task_id, &mut spec);
+    prepare_ffmpeg(&app, &task_id, &mut spec);
 
     let args = ytdlp_core::build_download_args(&spec);
     log_command("下载", &task_id, &exe, &args);
@@ -692,6 +710,7 @@ fn handle_event(app: &AppHandle, task_id: &str, ev: Event) {
             });
         }
         Event::Error(msg) => {
+            let msg = classify_error(&msg, None);
             update(app, task_id, |t| {
                 t.error = Some(msg);
             });
@@ -710,7 +729,6 @@ fn handle_event(app: &AppHandle, task_id: &str, ev: Event) {
 ///
 /// `proxyMode` 三种取值：
 /// - `none`    不使用代理
-            let msg = classify_error(&msg, None);
 /// - `system`  跟随 Windows 系统代理（读注册表）
 /// - `manual`  手动填写的 host/port/协议/认证
 ///
@@ -1330,6 +1348,11 @@ fn should_complete_despite_exit(produced: bool, multi_item: bool) -> bool {
 /// 靠匹配其中的英文原文来判断的。
 fn classify_error(stderr: &str, code: Option<i32>) -> String {
     let pick = |needle: &str| stderr.lines().find(|l| l.contains(needle));
+    let with_raw = |summary: &str, line: &str| {
+        let raw = line.trim();
+        let raw = raw.strip_prefix("ERROR:").unwrap_or(raw).trim();
+        format!("{summary}\n{raw}")
+    };
 
     // PyInstaller 引导器报错：最常见的成因是 onedir 构建被单独复制，丢了 `_internal\`。
     if let Some(l) = pick("Failed to load Python DLL").or_else(|| pick("[PYI-")) {
@@ -1337,11 +1360,6 @@ fn classify_error(stderr: &str, code: Option<i32>) -> String {
     }
     if let Some(l) = pick("Sign in to confirm") {
         return with_raw("需要登录：请在「设置 → 账号」配置 Cookie", l);
-    let with_raw = |summary: &str, line: &str| {
-        let raw = line.trim();
-        let raw = raw.strip_prefix("ERROR:").unwrap_or(raw).trim();
-        format!("{summary}\n{raw}")
-    };
     }
     if let Some(l) = pick("Private video")
         .or_else(|| pick("members-only"))
@@ -1369,6 +1387,8 @@ fn classify_error(stderr: &str, code: Option<i32>) -> String {
     if let Some(l) = pick("needs to be reloaded") {
         return with_raw("YouTube 暂时限流：稍等几分钟再试", l);
     }
+    // 如果链接来自 YouTube，这通常不是格式设置的问题——拿不到真实流时
+    // （只返回 storyboard 预览图）也会报这个错。
     if let Some(l) = pick("Requested format is not available") {
         return with_raw("所选格式不可用：试试「最佳画质」", l);
     }
@@ -1378,8 +1398,6 @@ fn classify_error(stderr: &str, code: Option<i32>) -> String {
     if let Some(l) = pick("No space left on device").or_else(|| pick("Errno 28")) {
         return with_raw("磁盘空间不足：请清理或换个输出目录", l);
     }
-    // 如果链接来自 YouTube，这通常不是格式设置的问题——拿不到真实流时
-    // （只返回 storyboard 预览图）也会报这个错。
     if let Some(l) = pick("Permission denied").or_else(|| pick("Errno 13")) {
         return with_raw("没有写入权限：换个目录或关闭占用的程序", l);
     }
