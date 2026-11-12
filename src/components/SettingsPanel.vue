@@ -579,6 +579,33 @@ const TEMPLATE_PRESETS = [
   { label: '只用标题', expr: '%(title).150B.%(ext)s' },
 ]
 
+/**
+ * 按站点 / 上传者分子目录。每个都带 `|兜底值`：字段缺失时 yt-dlp 会填成 `NA`，
+ * 不兜底就会冒出一个叫 NA 的目录。
+ */
+const FOLDER_PRESETS = [
+  { label: '按站点', expr: `%(extractor)s/${DEFAULT_FILENAME_TEMPLATE}` },
+  { label: '按上传者', expr: `%(uploader,channel|未知作者).80B/${DEFAULT_FILENAME_TEMPLATE}` },
+  { label: '按上传月份', expr: `%(upload_date>%Y-%m|未知日期)s/${DEFAULT_FILENAME_TEMPLATE}` },
+  {
+    label: '站点 / 上传者',
+    expr: `%(extractor)s/%(uploader,channel|未知作者).80B/${DEFAULT_FILENAME_TEMPLATE}`,
+  },
+]
+
+/**
+ * 拆开字段括号里的内容：`uploader,channel>%Y|兜底` → 备选字段、日期格式、兜底值。
+ */
+function parseField(inner: string): { names: string[]; dateFmt?: string; fallback?: string } {
+  const bar = inner.indexOf('|')
+  const fallback = bar >= 0 ? inner.slice(bar + 1) : undefined
+  const head = bar >= 0 ? inner.slice(0, bar) : inner
+  const gt = head.indexOf('>')
+  const dateFmt = gt >= 0 ? head.slice(gt + 1) : undefined
+  const names = (gt >= 0 ? head.slice(0, gt) : head).split(',').map((n) => n.trim()).filter(Boolean)
+  return { names, dateFmt, fallback }
+}
+
 /** 修饰符速查——这些不是字段，是写在字段后面的格式说明。 */
 const TEMPLATE_MODIFIERS = [
   { code: '%(title).150B', desc: '按字节截断到 150（中文安全，防超长路径）' },
@@ -635,9 +662,10 @@ function truncateBytes(str: string, n: number): string {
  */
 function renderTemplate(tpl: string, sample: Record<string, string>): string {
   return tpl.replace(
-    /%\(([^)>]+)(?:>([^)]*))?\)([-+#0-9.]*)([sSdDjJlLqB])/g,
-    (whole, name: string, dateFmt: string | undefined, spec: string, conv: string) => {
-      const raw = sample[name.trim()]
+    /%\(([^)]+)\)([-+#0-9.]*)([sSdDjJlLqB])/g,
+    (whole, inner: string, spec: string, conv: string) => {
+      const { names, dateFmt, fallback } = parseField(inner)
+      const raw = names.map((n) => sample[n]).find((v) => v !== undefined) ?? fallback
       if (raw === undefined) return whole // 未知字段：原样留着，由警告去说
 
       let v = raw
@@ -671,7 +699,9 @@ const templatePreview = computed(() => {
 /** 模板里出现的字段名（去重）。 */
 const templateFields = computed(() => {
   const names = new Set<string>()
-  for (const m of s.filenameTemplate.matchAll(/%\(([^)>]+)/g)) names.add(m[1].trim())
+  for (const m of s.filenameTemplate.matchAll(/%\(([^)]+)\)/g)) {
+    for (const n of parseField(m[1]).names) names.add(n)
+  }
   return [...names]
 })
 
@@ -849,6 +879,19 @@ const templateWarning = computed(() => {
             <div class="tpl-presets">
               <button
                 v-for="p in TEMPLATE_PRESETS"
+                :key="p.label"
+                class="tpl-preset"
+                :class="{ on: s.filenameTemplate === p.expr }"
+                :title="p.expr"
+                @click="s.filenameTemplate = p.expr"
+              >
+                {{ p.label }}
+              </button>
+            </div>
+            <div class="tpl-presets">
+              <span class="tp-label">存到子目录</span>
+              <button
+                v-for="p in FOLDER_PRESETS"
                 :key="p.label"
                 class="tpl-preset"
                 :class="{ on: s.filenameTemplate === p.expr }"
@@ -1896,7 +1939,11 @@ textarea.mono:focus {
 .tpl-presets {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+}
+.tpl-presets .tp-label {
+  font-size: var(--fs-xs);
 }
 .tpl-preset {
   padding: 4px 10px;
