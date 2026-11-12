@@ -268,6 +268,7 @@ export const defaultSettings: Settings = {
   sponsorblock: 'off',
   closeToTray: true,
   subscriptionIntervalHours: 6,
+  autoCheckAppUpdate: true,
   execCommand: '',
   notifyOnComplete: true,
   notifyOnFailure: true,

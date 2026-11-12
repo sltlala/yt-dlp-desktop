@@ -269,6 +269,18 @@ async function onShortcut(e: KeyboardEvent) {
 onMounted(() => document.addEventListener('keydown', onShortcut))
 onUnmounted(() => document.removeEventListener('keydown', onShortcut))
 
+/* ───────────────── 应用新版本提示 ───────────────── */
+const appUpdateLatest = ref<string | null>(null)
+onMounted(() => {
+  if (!isTauri()) return
+  // 让开启动高峰；失败（离线、还没发过版）不打扰用户
+  window.setTimeout(async () => {
+    if (store.settings?.autoCheckAppUpdate === false) return
+    const info = await api.checkAppUpdate().catch(() => null)
+    appUpdateLatest.value = info?.latest ?? null
+  }, 15_000)
+})
+
 /* ───────────────── 全部完成后睡眠 / 关机 ───────────────── */
 const afterAll = ref<AfterAllStatus>({ mode: 'none', countdown: null })
 let unAfterAll: (() => void) | null = null
@@ -500,6 +512,13 @@ watch(
             未找到 ffmpeg：高画质视频会降级为低画质，音频转换和字幕/封面嵌入也不可用。
           </span>
           <button class="btn sm primary" @click="openSettings('download')">去下载</button>
+        </div>
+
+        <div v-if="appUpdateLatest" class="disk-banner">
+          <span class="db-icon">⬆️</span>
+          <span class="db-text">新版本 v{{ appUpdateLatest }} 可以更新了</span>
+          <button class="btn sm primary" @click="openSettings('general')">去更新</button>
+          <button class="btn ghost sm" @click="appUpdateLatest = null">✕</button>
         </div>
 
         <div v-if="afterAll.countdown != null" class="disk-banner">

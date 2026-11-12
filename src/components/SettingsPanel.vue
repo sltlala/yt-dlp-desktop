@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useTaskStore } from '../stores/tasks'
-import { api, type ProbeResult, type UpdateInfo } from '../ipc'
+import { api, type AppUpdateInfo, type ProbeResult, type UpdateInfo } from '../ipc'
 import type {
   BrowserChoice,
   CodecChoices,
@@ -410,6 +410,39 @@ async function runUpdate() {
     updateMsg.value = String(e)
   } finally {
     updateBusy.value = false
+  }
+}
+
+/* ── 应用自身的更新 ── */
+const appUpdate = ref<AppUpdateInfo | null>(null)
+const appUpdateMsg = ref<string | null>(null)
+const appUpdateBusy = ref(false)
+const appUpdateProgress = ref<{ downloaded: number; total: number | null } | null>(null)
+
+async function checkAppUpdate() {
+  appUpdateBusy.value = true
+  appUpdateMsg.value = null
+  try {
+    appUpdate.value = await api.checkAppUpdate()
+  } catch (e) {
+    appUpdateMsg.value = String(e)
+  } finally {
+    appUpdateBusy.value = false
+  }
+}
+
+async function installAppUpdate() {
+  appUpdateBusy.value = true
+  appUpdateMsg.value = null
+  const un = await api.onAppUpdateProgress((p) => (appUpdateProgress.value = p))
+  try {
+    await api.installAppUpdate()
+  } catch (e) {
+    appUpdateMsg.value = String(e)
+  } finally {
+    un()
+    appUpdateBusy.value = false
+    appUpdateProgress.value = null
   }
 }
 
@@ -1003,6 +1036,38 @@ const templateWarning = computed(() => {
             配合配套的浏览器扩展（右键「用 yt-dlp 下载」）使用。
             取消勾选后应用不再监听该端口（重启生效）。
           </p>
+
+          <h3>应用更新</h3>
+          <label class="check">
+            <input v-model="s.autoCheckAppUpdate" type="checkbox" />
+            <span>启动时检查新版本</span>
+          </label>
+          <div class="row-inline test-row">
+            <button class="btn sm" :disabled="appUpdateBusy" @click="checkAppUpdate">
+              {{ appUpdateBusy && !appUpdateProgress ? '检查中…' : '检查更新' }}
+            </button>
+            <button
+              v-if="appUpdate?.latest"
+              class="btn sm primary"
+              :disabled="appUpdateBusy"
+              @click="installAppUpdate"
+            >
+              下载并安装 v{{ appUpdate.latest }}
+            </button>
+            <span v-if="appUpdateProgress" class="ver mono">
+              {{ fmtBytes(appUpdateProgress.downloaded) }}
+              <template v-if="appUpdateProgress.total">
+                / {{ fmtBytes(appUpdateProgress.total) }}
+              </template>
+            </span>
+          </div>
+          <p v-if="appUpdate?.latest" class="note">
+            有新版本（v{{ appUpdate.current }} → v{{ appUpdate.latest }}）。安装时应用会关闭，装好后自动重开；
+            没下完的任务重开后会显示为「已暂停」，点继续即可接着下。
+            <template v-if="appUpdate.notes"><br />{{ appUpdate.notes }}</template>
+          </p>
+          <p v-else-if="appUpdate" class="note">已是最新版本（v{{ appUpdate.current }}）。</p>
+          <p v-if="appUpdateMsg" class="res bad">{{ appUpdateMsg }}</p>
         </section>
 
         <!-- ───── 格式 ───── -->

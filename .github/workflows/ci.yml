@@ -70,8 +70,9 @@ jobs:
         run: npm ci
 
       # 前端不用单独构建：tauri.conf.json 的 beforeBuildCommand 就是 npm run build
+      # CI 包不走自动更新，关掉更新签名：签名私钥只给 release.yml，PR 构建拿不到
       - name: 构建安装包
-        run: npm run tauri:build
+        run: npm run tauri:build -- --config src-tauri/tauri.ci.conf.json
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4

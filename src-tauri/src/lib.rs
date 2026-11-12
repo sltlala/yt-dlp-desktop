@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 mod afterall;
+mod app_update;
 mod clipboard;
 mod cookies;
 mod ffmpeg;
@@ -94,6 +95,7 @@ fn default_settings() -> Value {
         "closeToTray": true,
         // 订阅多久自动检查一次；0 = 只手动检查
         "subscriptionIntervalHours": 6,
+        "autoCheckAppUpdate": true,
         // ── 下载后动作（ROADMAP §F16）──
         // 完成后执行的命令（--exec）。留空 = 不执行。
         // ⚠️ 会以本机权限执行，界面必须做安全确认，绝不静默启用。
@@ -1382,6 +1384,7 @@ async fn ytdlp_info(state: State<'_, AppState>) -> Result<Value, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // 把窗口夹到当前显示器能容纳的范围。
             //
@@ -1465,6 +1468,7 @@ pub fn run() {
             // 浏览器扩展一键推送（ROADMAP §F19）：本机回环端口接收扩展发来的 URL。
             push::spawn(app.handle().clone());
 
+            app.manage(app_update::PendingUpdate::default());
             app.manage(afterall::AfterAll::default());
             afterall::spawn(app.handle().clone());
             app.manage(subscribe::Subscriptions::load());
@@ -1494,6 +1498,8 @@ pub fn run() {
         })
         .on_window_event(tray::on_window_event)
         .invoke_handler(tauri::generate_handler![
+            app_update::check_app_update,
+            app_update::install_app_update,
             afterall::get_after_all,
             afterall::set_after_all,
             subscribe::list_subscriptions,

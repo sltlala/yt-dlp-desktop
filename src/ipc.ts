@@ -32,6 +32,13 @@ type Listener = (tasks: Task[]) => void
 type PatchListener = (task: Task) => void
 type ProgressListener = (p: ProgressPatch) => void
 
+export interface AppUpdateInfo {
+  current: string
+  /** null = 已是最新。 */
+  latest: string | null
+  notes: string | null
+}
+
 export type AfterAllMode = 'none' | 'sleep' | 'shutdown'
 export interface AfterAllStatus {
   mode: AfterAllMode
@@ -232,6 +239,13 @@ const tauriBackend = {
   /** 真发一次请求验证代理——只校验格式的话，代理没启动也会显示「格式正确」。 */
   testProxy: () => invoke<ProbeResult>('test_proxy'),
   checkYtdlpUpdate: () => invoke<UpdateInfo>('check_ytdlp_update'),
+  checkAppUpdate: () => invoke<AppUpdateInfo>('check_app_update'),
+  /** 下载并安装；装好后应用会被安装程序关掉重开。 */
+  installAppUpdate: () => invoke<void>('install_app_update'),
+  onAppUpdateProgress: (l: (p: { downloaded: number; total: number | null }) => void) =>
+    listen<{ downloaded: number; total: number | null }>('appupdate://progress', (e) =>
+      l(e.payload),
+    ),
   applyYtdlpUpdate: () => invoke<string>('apply_ytdlp_update'),
 }
 
@@ -991,5 +1005,15 @@ export const api = isTauri()
       previewFormatExpression: (s: Settings) => mock().previewFormatExpression(s),
       testProxy: () => mock().testProxy(),
       checkYtdlpUpdate: () => mock().checkYtdlpUpdate(),
+      checkAppUpdate: async (): Promise<AppUpdateInfo> => ({
+        current: '0.2.0',
+        latest: null,
+        notes: null,
+      }),
+      installAppUpdate: async () => {
+        throw '演示模式不能安装更新'
+      },
+      onAppUpdateProgress: (_l: (p: { downloaded: number; total: number | null }) => void) =>
+        Promise.resolve(() => {}),
       applyYtdlpUpdate: () => mock().applyYtdlpUpdate(),
     }

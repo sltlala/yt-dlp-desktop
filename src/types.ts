@@ -269,6 +269,8 @@ export interface Settings {
   closeToTray: boolean
   /** 订阅多久自动检查一次（小时）；0 = 只手动检查。 */
   subscriptionIntervalHours: number
+  /** 启动时检查应用有没有新版本。 */
+  autoCheckAppUpdate: boolean
   /**
    * 下载后执行命令（ROADMAP §F16）：`--exec`。留空 = 不执行。
    * ⚠️ 会以本机权限执行，界面必须做安全确认。

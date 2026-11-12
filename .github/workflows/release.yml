@@ -49,6 +49,10 @@ jobs:
         env:
           # GitHub 自动注入的 token，不需要自己配 secret
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 应用内自动更新要求安装包带签名，公钥在 tauri.conf.json 的 plugins.updater。
+          # 私钥需要在仓库 Settings → Secrets 里配好；丢了私钥，已装的版本就再也收不到更新。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           # 版本号取自 src-tauri/tauri.conf.json 的 version
           tagName: v__VERSION__
