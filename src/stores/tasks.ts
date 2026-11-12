@@ -8,7 +8,7 @@ export type Filter = 'all' | 'active' | 'completed' | 'failed'
 let pollTimer: number | null = null
 
 /**
- * 悬浮刷新按钮图标的最短转圈时长。
+ * 刷新按钮图标的最短转圈时长。
  *
  * 本地 IPC 刷新几毫秒就完成，若立刻复位 `refreshing`，旋转动画的类加了
  * 又删，浏览器一帧都来不及画——用户看到的是「没转」。这里保证至少转完一圈。
@@ -16,7 +16,7 @@ let pollTimer: number | null = null
 const REFRESH_MIN_SPIN_MS = 900
 
 /**
- * 转一圈的周期，必须与 App.vue 里 `fab-spin` 动画的 duration（`0.9s`）一致。
+ * 转一圈的周期，必须与 App.vue 里 `refresh-spin` 动画的 duration（`0.9s`）一致。
  *
  * 停圈时机要对齐到**整圈边界**（360° 与 0° 视觉上同一处），否则图标会
  * 「多转一点再复位」——上一版就是 0.8s/圈 撞上 900ms 时长 = 1.125 圈，
@@ -53,7 +53,7 @@ export const useTaskStore = defineStore('tasks', {
      * 必须换 URL 才能强制重取。
      */
     thumbVersion: 0,
-    /** 手动刷新进行中——悬浮按钮据此转圈并防抖。 */
+    /** 手动刷新进行中——刷新按钮据此转圈并防抖。 */
     refreshing: false,
     /** 磁盘空间预估结果（ROADMAP §F6）。null 表示尚未检查。 */
     diskReport: null as { freeBytes: number | null; neededBytes: number | null; warn: boolean } | null,

@@ -444,6 +444,16 @@ watch(
           <div class="top-actions">
             <input v-model="query" class="search" type="search" placeholder="搜索标题或链接…" />
             <button
+              class="btn sm refresh"
+              :class="{ spinning: store.refreshing }"
+              :disabled="store.refreshing"
+              title="刷新任务详情、进度与缩略图"
+              aria-label="刷新"
+              @click="store.refresh()"
+            >
+              <span class="refresh-ic" aria-hidden="true">⟳</span>
+            </button>
+            <button
               v-if="!store.selectMode"
               class="btn sm"
               :disabled="shown.length === 0"
@@ -559,14 +569,6 @@ watch(
           <div class="sb-right">
             <span v-if="hostLimitLabel" class="sb-host">{{ hostLimitLabel }}</span>
             <span v-if="hostLimitLabel" class="sep">·</span>
-            <span>共 {{ store.counts.all }} 个任务</span>
-            <span class="sep">·</span>
-            <span>进行中 {{ store.counts.active }}</span>
-            <span class="sep">·</span>
-            <span>已完成 {{ store.counts.completed }}</span>
-            <span v-if="store.counts.failed" class="sep">·</span>
-            <span v-if="store.counts.failed" class="err">失败 {{ store.counts.failed }}</span>
-            <span class="sep">·</span>
             <select
               class="sb-after"
               :class="{ on: afterAll.mode !== 'none' }"
@@ -582,19 +584,6 @@ watch(
             <span class="sb-keys" :title="shortcutTitle">快捷键</span>
           </div>
         </footer>
-
-        <!-- 悬浮刷新：右下角，不随列表滚动，重拉详情/进度并强制重下缩略图 -->
-        <button
-          class="fab-refresh"
-          :class="{ spinning: store.refreshing }"
-          :disabled="store.refreshing"
-          title="刷新任务详情、进度与缩略图"
-          @click="store.refresh()"
-        >
-          <span class="fab-ic" aria-hidden="true">⟳</span>
-          <span class="fab-label">刷新</span>
-        </button>
-
         <!-- 剪贴板监听气泡（ROADMAP §F4）：复制链接后询问是否下载 -->
         <div v-if="clipboardTip" class="clip-tip">
           <div class="clip-tip-text">
@@ -631,6 +620,10 @@ watch(
   border-right: 1px solid var(--border-soft);
   padding: 16px 14px;
   gap: 18px;
+  /* 窗口很矮时侧栏自己滚，底部统计卡片不被裁掉 */
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
 }
 
 .brand {
@@ -941,7 +934,9 @@ watch(
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 8px 22px;
+  white-space: nowrap;
   border-top: 1px solid var(--border-soft);
   background: var(--bg-elev);
   font-size: var(--fs-xs);
@@ -958,9 +953,16 @@ watch(
 .sb-host {
   color: var(--text-mute);
 }
+.sb-left {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .sb-right {
   display: flex;
+  align-items: center;
   gap: 7px;
+  flex-shrink: 0;
 }
 .sep {
   opacity: 0.5;
@@ -981,74 +983,34 @@ watch(
   cursor: help;
   border-bottom: 1px dotted currentColor;
 }
-.err {
-  color: var(--err);
-}
 
-/* ── 悬浮刷新按钮 ──
- *
- * fixed 定位，锚在右下角、状态栏上方。任务列表在 `.list-wrap` 里滚动，
- * 这个按钮不在其中，所以始终可见。半透明、淡色调，像一片磨砂玻璃浮在
- * 列表上——不抢注意力，但始终够得着。
- */
-.fab-refresh {
-  position: fixed;
-  right: 22px;
-  bottom: 56px;
-  z-index: 2000;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 10px 16px;
-  border-radius: 999px;
-  /* 半透明 + 淡色：低饱和的蓝，叠在列表上也不会糊成一团 */
-  background: rgba(61, 110, 245, 0.12);
-  border: 1px solid rgba(61, 110, 245, 0.22);
-  color: #5b82f7;
-  font-weight: 600;
-  font-size: var(--fs-md);
-  box-shadow: 0 4px 14px rgba(61, 110, 245, 0.14);
-  backdrop-filter: blur(6px);
-  transition: background 0.13s, border-color 0.13s, color 0.13s, transform 0.13s,
-    box-shadow 0.13s;
+/* 刷新：只放图标，和「多选」并排；刷新中图标旋转。
+   周期 0.9s 必须与 store 里 REFRESH_SPIN_PERIOD_MS 一致，停圈才对齐整圈。 */
+.btn.refresh {
+  padding: 4px 9px;
 }
-.fab-refresh:hover:not(:disabled) {
-  background: rgba(61, 110, 245, 0.2);
-  border-color: rgba(61, 110, 245, 0.32);
-  color: #3d6ef5;
-  transform: translateY(-1px);
-  box-shadow: 0 6px 18px rgba(61, 110, 245, 0.2);
-}
-.fab-refresh:active:not(:disabled) {
-  transform: translateY(0);
-  box-shadow: 0 3px 10px rgba(61, 110, 245, 0.16);
-}
-.fab-refresh:disabled {
-  opacity: 0.7;
+.btn.refresh:disabled {
   cursor: progress;
 }
-.fab-ic {
+.refresh-ic {
   display: inline-block;
-  font-size: var(--fs-lg);
+  font-size: var(--fs-md);
   line-height: 1;
 }
-/* 刷新中图标旋转，转起来就是「正在做事」的反馈；`refreshing` 一复位就停。
-   周期 0.9s 必须与 store 里 REFRESH_SPIN_PERIOD_MS 一致，停圈才对齐整圈。 */
-.fab-refresh.spinning .fab-ic {
-  animation: fab-spin 0.9s linear infinite;
+.btn.refresh.spinning .refresh-ic {
+  animation: refresh-spin 0.9s linear infinite;
 }
-@keyframes fab-spin {
+@keyframes refresh-spin {
   to {
     transform: rotate(360deg);
   }
 }
 
-/* ── 剪贴板监听气泡（ROADMAP §F4）──
-   同样 fixed 锚在右下角、刷新按钮上方。 */
+/* ── 剪贴板监听气泡（ROADMAP §F4）：fixed 锚在右下角、状态栏上方 ── */
 .clip-tip {
   position: fixed;
   right: 22px;
-  bottom: 112px;
+  bottom: 52px;
   z-index: 2000;
   max-width: 360px;
   padding: 12px 14px;

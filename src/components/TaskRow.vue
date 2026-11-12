@@ -41,6 +41,9 @@ const fraction = computed(() => {
   return Math.max(0, Math.min(1, downloaded / total))
 })
 
+/** 结局已定的任务不再画进度条：满格的条不带信息，只会让列表显得拥挤。 */
+const showBar = computed(() => !['completed', 'skipped', 'failed'].includes(t.value.state))
+
 const indeterminate = computed(
   () => t.value.state === 'downloading' && fraction.value === null,
 )
@@ -144,7 +147,7 @@ const canOpen = computed(() => !!t.value.filepath)
         </div>
 
         <!-- 进度条 -->
-        <div class="bar" :class="{ ind: indeterminate }">
+        <div v-if="showBar" class="bar" :class="{ ind: indeterminate }">
           <div
             v-if="!indeterminate && fraction !== null"
             class="fill"
