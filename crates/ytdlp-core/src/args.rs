@@ -453,6 +453,9 @@ pub struct DownloadSpec {
     pub exec: Option<String>,
     /// ffmpeg 所在目录（`--ffmpeg-location`）。`None` = 交给 yt-dlp 自己在 PATH 上找。
     pub ffmpeg_location: Option<PathBuf>,
+    /// 片段下载：已规范化的 `--download-sections` 值（见 [`crate::parse_sections`]）。
+    /// 空 = 下载整个视频。
+    pub sections: Vec<String>,
 }
 
 /// 把勾选的下标（0-based）转成 `--playlist-items` 的值。
@@ -521,6 +524,7 @@ impl DownloadSpec {
             split_chapters: false,
             exec: None,
             ffmpeg_location: None,
+            sections: Vec::new(),
         }
     }
 
@@ -537,6 +541,7 @@ impl DownloadSpec {
                 self.effective_format_expression().contains('+')
                     || self.embed.any()
                     || self.split_chapters
+                    || !self.sections.is_empty()
             }
         }
     }
@@ -700,7 +705,7 @@ pub fn build_download_args(spec: &DownloadSpec) -> Vec<String> {
         "--paths".into(),
         format!("temp:{}", spec.temp_dir.display()),
         "--output".into(),
-        spec.filename_template.clone(),
+        output_template(spec),
     ];
 
     // JS 运行时放在前面：它是「能不能拿到真实格式」的前提，
@@ -750,7 +755,14 @@ pub fn build_download_args(spec: &DownloadSpec) -> Vec<String> {
     let partial_only = matches!(spec.preset, Preset::SubsOnly | Preset::ThumbnailOnly);
     if !partial_only {
         push_embed_args(&mut a, spec);
-        push_downloader_args(&mut a, spec);
+        // 片段下载由 yt-dlp 交给 ffmpeg 去截取，外部下载器会把它顶掉
+        if spec.sections.is_empty() {
+            push_downloader_args(&mut a, spec);
+        }
+        for s in &spec.sections {
+            a.push("--download-sections".into());
+            a.push(s.clone());
+        }
     }
     push_proxy(&mut a, spec.proxy.as_deref());
     push_cookies(&mut a, spec.cookies.as_ref());
@@ -759,7 +771,9 @@ pub fn build_download_args(spec: &DownloadSpec) -> Vec<String> {
         a.push("--limit-rate".into());
         a.push(rate.clone());
     }
-    if let Some(archive) = &spec.archive {
+    // 片段不进下载归档：归档按视频 id 记，记上之后再想下完整版会被当成「已下载过」跳过，
+    // 而先下过完整版的视频，片段也会被跳过。
+    if let Some(archive) = spec.archive.as_ref().filter(|_| spec.sections.is_empty()) {
         a.push("--download-archive".into());
         a.push(archive.display().to_string());
     }
@@ -782,6 +796,20 @@ pub fn build_download_args(spec: &DownloadSpec) -> Vec<String> {
     a.push("--".into());
     a.push(spec.url.clone());
     a
+}
+
+/// 输出文件名模板。片段下载时在扩展名前加上起止秒数：
+/// 不加的话片段与完整版同名，会被当成「文件已存在」跳过，多个片段之间也会互相覆盖。
+fn output_template(spec: &DownloadSpec) -> String {
+    let t = &spec.filename_template;
+    if spec.sections.is_empty() {
+        return t.clone();
+    }
+    let tag = " [%(section_start)d-%(section_end)ds]";
+    match t.strip_suffix(".%(ext)s") {
+        Some(stem) => format!("{stem}{tag}.%(ext)s"),
+        None => format!("{t}{tag}"),
+    }
 }
 
 fn push_embed_args(a: &mut Vec<String>, spec: &DownloadSpec) {
@@ -1008,6 +1036,38 @@ mod tests {
         assert!(!s.needs_ffmpeg());
         s.split_chapters = true;
         assert!(s.needs_ffmpeg(), "按章节切分要 ffmpeg");
+        s.split_chapters = false;
+        s.sections = vec!["*0:00:10-0:00:20".into()];
+        assert!(s.needs_ffmpeg(), "片段由 ffmpeg 截取");
+    }
+
+    #[test]
+    fn sections_passed_one_flag_per_range() {
+        let mut s = spec();
+        s.sections = vec!["*0:00:10-0:00:20".into(), "*0:01:00-inf".into()];
+        let a = build_download_args(&s);
+        let values: Vec<&String> = a
+            .windows(2)
+            .filter(|w| w[0] == "--download-sections")
+            .map(|w| &w[1])
+            .collect();
+        assert_eq!(values, ["*0:00:10-0:00:20", "*0:01:00-inf"]);
+    }
+
+    #[test]
+    fn sections_get_distinct_filenames_and_skip_archive() {
+        let mut s = spec();
+        s.archive = Some(PathBuf::from("C:/ad/archive.txt"));
+        s.aria2c = true;
+        let whole = build_download_args(&s);
+        assert!(whole.contains(&"--download-archive".to_string()));
+
+        s.sections = vec!["*0:00:10-0:00:20".into()];
+        let a = build_download_args(&s);
+        let out = &a[a.iter().position(|x| x == "--output").unwrap() + 1];
+        assert_eq!(out, "%(title).150B [%(id)s] [%(section_start)d-%(section_end)ds].%(ext)s");
+        assert!(!a.contains(&"--download-archive".to_string()), "片段不该记进归档");
+        assert!(!a.iter().any(|x| x.contains("aria2c")), "片段要交给 ffmpeg 截取");
     }
 
     #[test]

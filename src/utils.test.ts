@@ -6,7 +6,9 @@ import {
   fmtBytes,
   fmtDuration,
   fmtEta,
+  fmtSection,
   fmtSpeed,
+  sectionsToInput,
   shortenPath,
   splitError,
 } from './utils'
@@ -74,6 +76,18 @@ describe('splitError', () => {
       detail: '',
     })
     expect(splitError(null)).toEqual({ summary: '', detail: '' })
+  })
+})
+
+describe('片段', () => {
+  it('展示时把 inf 写成结尾', () => {
+    expect(fmtSection('*0:01:30-0:02:45')).toBe('0:01:30 – 0:02:45')
+    expect(fmtSection('*1:00:00-inf')).toBe('1:00:00 – 结尾')
+  })
+
+  it('回填到输入框后再提交能得到同样的结果', () => {
+    expect(sectionsToInput(['*0:00:10-0:00:20', '*0:01:00-inf'])).toBe('0:00:10-0:00:20, 0:01:00-')
+    expect(sectionsToInput(undefined)).toBe('')
   })
 })
 

@@ -16,6 +16,7 @@ pub mod locate;
 pub mod parse;
 pub mod probe;
 pub mod proxy;
+pub mod sections;
 pub mod url;
 pub mod version;
 
@@ -42,6 +43,7 @@ pub use proxy::{
     match_proxy_rule, matches_pattern, parse_bypass, parse_proxy_rules, parse_proxy_url,
     ProxyConfig, ProxyProtocol, ProxyRule,
 };
+pub use sections::parse_sections;
 pub use url::{host_of, is_valid_url};
 pub use version::{is_newer, looks_like_version};
 

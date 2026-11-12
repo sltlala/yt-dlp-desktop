@@ -284,7 +284,7 @@ fn prepare_ffmpeg(app: &AppHandle, task_id: &str, spec: &mut DownloadSpec) {
 
 /// 运行一个下载任务。返回最终状态字符串。
 pub async fn run_download(app: AppHandle, task_id: String) {
-    let (url, playlist_items, format_override, auto_impersonate, retry_flags) = {
+    let (url, playlist_items, format_override, auto_impersonate, retry_flags, sections) = {
         let state = app.state::<AppState>();
         let found = state.tasks.lock().ok().and_then(|t| {
             t.iter().find(|x| x.id == task_id).map(|x| {
@@ -294,6 +294,7 @@ pub async fn run_download(app: AppHandle, task_id: String) {
                     x.format_override.clone(),
                     x.auto_impersonate,
                     x.retry_flags,
+                    x.sections.clone(),
                 )
             })
         });
@@ -310,6 +311,7 @@ pub async fn run_download(app: AppHandle, task_id: String) {
         // 播放列表选集与格式覆盖都是**任务级**的，不在设置里。
         spec.playlist_items = playlist_items;
         spec.format_override = format_override;
+        spec.sections = sections;
         // 探测阶段如果已经因为 Cloudflare 开过模拟，这里直接沿用——
         // 否则要再撞一次 403 才发现，白跑一轮。
         spec.impersonate = spec.impersonate || auto_impersonate;

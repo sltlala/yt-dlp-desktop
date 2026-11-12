@@ -132,6 +132,9 @@ pub struct Task {
     /// 「本地已有」。`None` = 未检测到重复。
     #[serde(default)]
     pub local_duplicate: Option<String>,
+    /// 片段下载的时间段（已规范化，见 `ytdlp_core::parse_sections`）。空 = 完整视频。
+    #[serde(default)]
+    pub sections: Vec<String>,
 }
 
 impl Task {
@@ -168,6 +171,7 @@ impl Task {
             auto_impersonate: false,
             retry_flags: 0,
             local_duplicate: None,
+            sections: Vec::new(),
         }
     }
 }

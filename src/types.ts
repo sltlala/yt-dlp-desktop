@@ -150,6 +150,8 @@ export interface Task {
    * 用 aria2c 时 yt-dlp 一条进度都不发，进度只能解析 aria2c 的输出，精度略低。
    */
   usedAria2c?: boolean
+  /** 片段下载的时间段（如 `*0:01:30-0:02:45`）。空 = 完整视频。 */
+  sections?: string[]
   /**
    * 本地重复检测（ROADMAP §F17）：探测后若发现历史里已有同 media id 且
    * 成品文件仍在磁盘的任务，记录那条历史任务的成品路径，供界面提示。

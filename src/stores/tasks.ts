@@ -247,6 +247,10 @@ export const useTaskStore = defineStore('tasks', {
     async setFormat(id: string, expression: string) {
       await api.setFormat(id, expression)
     },
+    /** 输入非法时把原因抛给调用方，就地显示在对话框里。 */
+    async setSections(id: string, input: string) {
+      await api.setSections(id, input)
+    },
     async removeMany() {
       await api.removeMany([...this.selected])
       this.clearSelection()

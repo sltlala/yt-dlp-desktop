@@ -3,7 +3,16 @@ import { computed, ref } from 'vue'
 import type { Task } from '../types'
 import { useTaskStore } from '../stores/tasks'
 import { api } from '../ipc'
-import { ellipsizePath, fmtBytes, fmtTime, shortenPath, splitError } from '../utils'
+import {
+  ellipsizePath,
+  fmtBytes,
+  fmtDuration,
+  fmtSection,
+  fmtTime,
+  sectionsToInput,
+  shortenPath,
+  splitError,
+} from '../utils'
 import FormatPicker from './FormatPicker.vue'
 import PlaylistPicker from './PlaylistPicker.vue'
 
@@ -60,6 +69,32 @@ async function applyFormat(expression: string) {
   await store.setFormat(t.value.id, expression)
 }
 
+/** 片段下载对话框。 */
+const showSections = ref(false)
+const sectionsInput = ref('')
+const sectionsError = ref('')
+const sectionsBusy = ref(false)
+
+function openSections() {
+  sectionsInput.value = sectionsToInput(t.value.sections)
+  sectionsError.value = ''
+  showSections.value = true
+}
+
+async function applySections(input: string) {
+  if (sectionsBusy.value) return
+  sectionsBusy.value = true
+  sectionsError.value = ''
+  try {
+    await store.setSections(t.value.id, input)
+    showSections.value = false
+  } catch (e) {
+    sectionsError.value = String(e)
+  } finally {
+    sectionsBusy.value = false
+  }
+}
+
 /**
  * 路径行要显示**尾部**。
  *
@@ -80,6 +115,9 @@ const rows = computed(() => {
         ? '手动指定 · 可在「选择格式」里恢复默认'
         : '跟随设置里的预设',
     },
+    ...(t.value.sections?.length
+      ? [{ k: '片段', v: t.value.sections.map(fmtSection).join('，'), mono: true }]
+      : []),
     { k: '容器', v: t.value.container.toUpperCase(), mono: true },
     { k: '输出目录', v: t.value.outputDir, display: shortenPath(out, 2), mono: true },
     {
@@ -186,6 +224,14 @@ const rows = computed(() => {
           移动 / 重命名
         </button>
         <button class="btn sm" @click="showFormats = true">选择格式</button>
+        <button
+          class="btn sm"
+          :disabled="!!t.playlistEntries?.length"
+          title="只下载视频里的某几段"
+          @click="openSections"
+        >
+          截取片段
+        </button>
         <button class="btn sm" @click="store.retry(t.id)">重新下载</button>
       </div>
 
@@ -261,6 +307,47 @@ const rows = computed(() => {
             <button class="btn sm ghost" @click="showRelocate = false">取消</button>
             <button class="btn sm primary" :disabled="relocateBusy" @click="doRelocate">
               {{ relocateBusy ? '移动中…' : '确定移动' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="showSections" class="mask" @click.self="showSections = false">
+        <div class="relocate-card">
+          <div class="rc-title">截取片段</div>
+          <label class="rc-field">
+            <span>
+              时间段（视频长 {{ fmtDuration(t.durationSec) }}）
+            </span>
+            <input
+              v-model="sectionsInput"
+              class="mono"
+              spellcheck="false"
+              placeholder="1:30-2:45, 10:00-"
+              @keydown.enter="applySections(sectionsInput)"
+            />
+          </label>
+          <p class="rc-note">
+            开始-结束，多段用逗号分隔；结束留空表示到结尾。每段存成一个文件，
+            起止点会对齐到附近的关键帧，可能差一两秒。
+          </p>
+          <p v-if="sectionsError" class="rc-error">{{ sectionsError }}</p>
+          <div class="rc-actions">
+            <button
+              v-if="t.sections?.length"
+              class="btn sm ghost"
+              :disabled="sectionsBusy"
+              @click="applySections('')"
+            >
+              改回完整视频
+            </button>
+            <button class="btn sm ghost" @click="showSections = false">取消</button>
+            <button
+              class="btn sm primary"
+              :disabled="sectionsBusy || !sectionsInput.trim()"
+              @click="applySections(sectionsInput)"
+            >
+              下载这些片段
             </button>
           </div>
         </div>
@@ -501,6 +588,11 @@ const rows = computed(() => {
   margin: 0;
   font-size: var(--fs-2xs);
   color: var(--text-mute);
+}
+.rc-error {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--err);
 }
 .rc-actions {
   display: flex;

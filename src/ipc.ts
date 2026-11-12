@@ -94,6 +94,9 @@ const tauriBackend = {
   /** 设定任务的 `-f` 表达式并立刻按新格式重下（「可用格式」对话框的落点）。 */
   setFormat: (id: string, expression: string) =>
     invoke<void>('set_task_format', { id, expression }),
+  /** 设定片段并立刻重下；输入非法时 reject 一条可读的原因。空串 = 完整视频。 */
+  setSections: (id: string, input: string) =>
+    invoke<string[]>('set_task_sections', { id, input }),
   removeRecord: (id: string) => invoke<void>('remove_record', { id }),
   removeMany: (ids: string[]) => invoke<void>('remove_many', { ids }),
   removeFromArchive: (ids: string[]) => invoke<number>('remove_from_archive', { ids }),
@@ -519,6 +522,20 @@ class MockBackend {
     this.emit()
   }
 
+  /** 只做最粗的校验，规范化与完整校验在后端（`ytdlp_core::parse_sections`）。 */
+  async setSections(id: string, input: string): Promise<string[]> {
+    const t = this.tasks.find((x) => x.id === id)
+    if (!t) throw '任务不存在'
+    const parts = input.split(/[,，;；\n]/).map((s) => s.trim()).filter(Boolean)
+    const bad = parts.find((p) => !/^[\d:.]*\s*[-~～]\s*[\d:.]*$/.test(p))
+    if (bad) throw `「${bad}」不是有效的时间段，写成 开始-结束，例如 1:30-2:45`
+    t.sections = parts.map((p) => `*${p.replace(/\s/g, '')}`)
+    t.state = 'downloading'
+    t.error = null
+    this.emit()
+    return t.sections
+  }
+
   async probeFormats(_url: string): Promise<FormatOption[]> {
     return structuredClone(demoFormats)
   }
@@ -855,6 +872,7 @@ export const api = isTauri()
       resume: (id: string) => mock().resume(id),
       retry: (id: string) => mock().retry(id),
       setFormat: (id: string, expression: string) => mock().setFormat(id, expression),
+      setSections: (id: string, input: string) => mock().setSections(id, input),
       removeRecord: (id: string) => mock().removeRecord(id),
       removeMany: (ids: string[]) => mock().removeMany(ids),
       removeFromArchive: (ids: string[]) => mock().removeFromArchive(ids),

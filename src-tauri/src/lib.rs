@@ -651,6 +651,27 @@ fn set_task_format(app: AppHandle, id: String, expression: String) {
     let _ = app.emit("task://update", app.state::<AppState>().snapshot());
 }
 
+/// 设置单个任务的片段（`--download-sections`），并立刻按新设置重下。
+///
+/// `input` 为空 = 恢复下载完整视频。输入不合法时返回可读的原因，任务不动。
+#[tauri::command]
+fn set_task_sections(app: AppHandle, id: String, input: String) -> Result<Vec<String>, String> {
+    let duration = app
+        .state::<AppState>()
+        .with_task(&id, |t| t.duration_sec)
+        .ok_or("任务不存在")?;
+    let sections = ytdlp_core::parse_sections(&input, duration)?;
+    app.state::<AppState>().with_task(&id, |t| {
+        t.sections = sections.clone();
+        t.state = "pending".into();
+        t.error = None;
+        t.queue_hint = Some("等待探测".into());
+    });
+    app.state::<Scheduler>().enqueue_probe(id);
+    let _ = app.emit("task://update", app.state::<AppState>().snapshot());
+    Ok(sections)
+}
+
 /// 移除任务记录，并清理该任务的临时目录。
 ///
 /// **不删除成品文件** —— 那是独立的「删除文件」动作（DESIGN §13）。
@@ -1452,6 +1473,7 @@ pub fn run() {
             pause_task,
             resume_task,
             set_task_format,
+            set_task_sections,
             remove_record,
             remove_many,
             remove_from_archive,

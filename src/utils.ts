@@ -152,6 +152,17 @@ export function splitError(err: string | null | undefined): { summary: string; d
   return { summary: err.slice(0, i).trim(), detail: err.slice(i + 1).trim() }
 }
 
+/** `*0:01:30-inf` → `0:01:30 – 结尾`。 */
+export function fmtSection(s: string): string {
+  const [a, b] = s.replace(/^\*/, '').split('-')
+  return `${a} – ${!b || b === 'inf' ? '结尾' : b}`
+}
+
+/** 片段回填到输入框：`*0:01:30-inf` → `0:01:30-`，再次提交能得到同样的结果。 */
+export function sectionsToInput(sections: string[] | undefined): string {
+  return (sections ?? []).map((s) => s.replace(/^\*/, '').replace(/-inf$/, '-')).join(', ')
+}
+
 export function basename(p: string): string {
   const parts = p.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? p
