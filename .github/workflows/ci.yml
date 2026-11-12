@@ -36,6 +36,9 @@ jobs:
       - name: 前端类型检查
         run: npm run typecheck
 
+      - name: 前端单元测试
+        run: npm test
+
   # 每次提交都打一份 Windows 安装包，挂在这次运行的 Artifacts 里，
   # 用来直接试最新提交，不必等发版。
   #

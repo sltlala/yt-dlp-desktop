@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
@@ -20,5 +20,10 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'chrome110',
     sourcemap: false,
+  },
+  test: {
+    // 演示后端用到 window 定时器，store 也会读 window
+    environment: 'happy-dom',
+    include: ['src/**/*.test.ts'],
   },
 })
