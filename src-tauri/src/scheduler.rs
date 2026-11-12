@@ -59,6 +59,26 @@ impl Scheduler {
         g.download_queue.push_back(QueuedDownload { id, host });
     }
 
+    /// 把任务挪到探测队列和下载队列的最前面。返回它是否在排队。
+    ///
+    /// 只改排队顺序，不绕过并发上限和同站限制：「优先」是下一个轮到它，
+    /// 不是挤掉正在跑的任务。
+    pub fn prioritize(&self, id: &str) -> bool {
+        let mut g = self.lock();
+        let mut found = false;
+        if let Some(i) = g.probe_queue.iter().position(|x| x == id) {
+            let item = g.probe_queue.remove(i).unwrap();
+            g.probe_queue.push_front(item);
+            found = true;
+        }
+        if let Some(i) = g.download_queue.iter().position(|x| x.id == id) {
+            let item = g.download_queue.remove(i).unwrap();
+            g.download_queue.push_front(item);
+            found = true;
+        }
+        found
+    }
+
     fn probe_done(&self, id: &str) {
         self.lock().probing.remove(id);
     }
@@ -148,38 +168,12 @@ pub fn pump(app: &AppHandle) {
     }
 
     // ── 下载池（含每域名限制）──
-    let mut to_download = Vec::new();
-    {
+    let to_download = {
         let sch = app.state::<Scheduler>();
         let mut g = sch.lock();
-
-        let mut host_count: HashMap<String, usize> = HashMap::new();
-        for h in g.downloading.values() {
-            *host_count.entry(h.clone()).or_default() += 1;
-        }
-
-        // 只扫一遍原队列长度，被域名限流挡下的条目放回队尾，不会死循环。
-        let scan = g.download_queue.len();
-        for _ in 0..scan {
-            if g.downloading.len() + to_download.len() >= dl_limit {
-                break;
-            }
-            let Some(item) = g.download_queue.pop_front() else { break };
-
-            // 已在下载的任务（重复入队保护）
-            if g.downloading.contains_key(&item.id) {
-                continue;
-            }
-            let used = host_count.get(&item.host).copied().unwrap_or(0);
-            if used >= host_limit {
-                g.download_queue.push_back(item);
-                continue;
-            }
-            *host_count.entry(item.host.clone()).or_default() += 1;
-            g.downloading.insert(item.id.clone(), item.host.clone());
-            to_download.push(item.id);
-        }
-    }
+        let Inner { download_queue, downloading, .. } = &mut *g;
+        take_ready(download_queue, downloading, dl_limit, host_limit)
+    };
     for id in to_download {
         let app2 = app.clone();
         let id2 = id.clone();
@@ -190,10 +184,50 @@ pub fn pump(app: &AppHandle) {
     }
 }
 
+/// 从下载队列里取出这一轮可以开始的任务，登记进 `downloading`。
+///
+/// 被同站限制挡下的条目**留在原位**：之前是挪到队尾，一挡就把排队顺序打乱，
+/// 「优先下载」也会因此失效。
+fn take_ready(
+    queue: &mut VecDeque<QueuedDownload>,
+    downloading: &mut HashMap<String, String>,
+    dl_limit: usize,
+    host_limit: usize,
+) -> Vec<String> {
+    let mut host_count: HashMap<String, usize> = HashMap::new();
+    for h in downloading.values() {
+        *host_count.entry(h.clone()).or_default() += 1;
+    }
+
+    let mut started = Vec::new();
+    let mut waiting = VecDeque::with_capacity(queue.len());
+    while let Some(item) = queue.pop_front() {
+        if downloading.len() >= dl_limit {
+            waiting.push_back(item);
+            break;
+        }
+        // 已在下载的任务（重复入队保护）
+        if downloading.contains_key(&item.id) {
+            continue;
+        }
+        let used = host_count.entry(item.host.clone()).or_default();
+        if *used >= host_limit {
+            waiting.push_back(item);
+            continue;
+        }
+        *used += 1;
+        downloading.insert(item.id.clone(), item.host.clone());
+        started.push(item.id);
+    }
+    waiting.append(queue);
+    *queue = waiting;
+    started
+}
+
 #[cfg(test)]
 mod tests {
     //! 队列逻辑本身依赖 Tauri 的 `AppHandle`，这里只测不依赖句柄的部分：
-    //! 入队去重与清理。
+    //! 入队去重、清理、排序与挑选。
 
     use super::*;
 
@@ -232,6 +266,57 @@ mod tests {
         assert!(g.download_queue.is_empty());
         assert!(g.probing.is_empty());
         assert!(g.downloading.is_empty());
+    }
+
+    fn ids(q: &VecDeque<QueuedDownload>) -> Vec<&str> {
+        q.iter().map(|x| x.id.as_str()).collect()
+    }
+
+    #[test]
+    fn prioritize_moves_to_front_of_both_queues() {
+        let s = sched();
+        for id in ["a", "b", "c"] {
+            s.enqueue_probe(id.into());
+            s.enqueue_download(id.into(), "x.com".into());
+        }
+        assert!(s.prioritize("c"));
+        let g = s.lock();
+        assert_eq!(g.probe_queue.iter().map(String::as_str).collect::<Vec<_>>(), ["c", "a", "b"]);
+        assert_eq!(ids(&g.download_queue), ["c", "a", "b"]);
+        drop(g);
+        assert!(!s.prioritize("missing"));
+    }
+
+    #[test]
+    fn take_ready_respects_limits_and_keeps_order() {
+        let s = sched();
+        for (id, host) in [("a", "x.com"), ("b", "x.com"), ("c", "y.com"), ("d", "x.com")] {
+            s.enqueue_download(id.into(), host.into());
+        }
+        let mut g = s.lock();
+        let Inner { download_queue, downloading, .. } = &mut *g;
+
+        let started = take_ready(download_queue, downloading, 3, 1);
+        assert_eq!(started, ["a", "c"]);
+        // 被同站限制挡下的 b、d 留在原位，没有被挪到队尾
+        assert_eq!(ids(download_queue), ["b", "d"]);
+
+        downloading.remove("a");
+        let started = take_ready(download_queue, downloading, 3, 1);
+        assert_eq!(started, ["b"]);
+        assert_eq!(ids(download_queue), ["d"]);
+    }
+
+    #[test]
+    fn take_ready_stops_at_global_limit() {
+        let s = sched();
+        for id in ["a", "b", "c"] {
+            s.enqueue_download(id.into(), format!("{id}.com"));
+        }
+        let mut g = s.lock();
+        let Inner { download_queue, downloading, .. } = &mut *g;
+        assert_eq!(take_ready(download_queue, downloading, 2, 1), ["a", "b"]);
+        assert_eq!(ids(download_queue), ["c"]);
     }
 
     #[test]

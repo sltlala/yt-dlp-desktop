@@ -94,6 +94,8 @@ const tauriBackend = {
   /** 设定任务的 `-f` 表达式并立刻按新格式重下（「可用格式」对话框的落点）。 */
   setFormat: (id: string, expression: string) =>
     invoke<void>('set_task_format', { id, expression }),
+  /** 把排队中的任务挪到队首。返回它是否真的在排队。 */
+  prioritize: (id: string) => invoke<boolean>('prioritize_task', { id }),
   /** 设定片段并立刻重下；输入非法时 reject 一条可读的原因。空串 = 完整视频。 */
   setSections: (id: string, input: string) =>
     invoke<string[]>('set_task_sections', { id, input }),
@@ -522,6 +524,14 @@ class MockBackend {
     this.emit()
   }
 
+  async prioritize(id: string): Promise<boolean> {
+    const t = this.tasks.find((x) => x.id === id)
+    if (!t || !['pending', 'queued'].includes(t.state)) return false
+    t.queueHint = '已优先，下一个开始'
+    this.emitPatch(t)
+    return true
+  }
+
   /** 只做最粗的校验，规范化与完整校验在后端（`ytdlp_core::parse_sections`）。 */
   async setSections(id: string, input: string): Promise<string[]> {
     const t = this.tasks.find((x) => x.id === id)
@@ -873,6 +883,7 @@ export const api = isTauri()
       retry: (id: string) => mock().retry(id),
       setFormat: (id: string, expression: string) => mock().setFormat(id, expression),
       setSections: (id: string, input: string) => mock().setSections(id, input),
+      prioritize: (id: string) => mock().prioritize(id),
       removeRecord: (id: string) => mock().removeRecord(id),
       removeMany: (ids: string[]) => mock().removeMany(ids),
       removeFromArchive: (ids: string[]) => mock().removeFromArchive(ids),

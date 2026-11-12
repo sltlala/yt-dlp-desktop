@@ -217,6 +217,14 @@ const canOpen = computed(() => !!t.value.filepath)
         <div class="actions" @click.stop>
           <!-- 多选时藏掉行内操作：此刻点行体是「勾选」，留着 ▼ 会让人以为还能展开 -->
           <template v-if="!store.selectMode">
+            <button
+              v-if="t.state === 'pending' || t.state === 'queued'"
+              class="btn ghost sm"
+              title="优先下载：挪到队首，下一个开始"
+              @click="store.prioritize(t.id)"
+            >
+              ⤒
+            </button>
             <button v-if="canPause" class="btn ghost sm" title="暂停" @click="store.pause(t.id)">
               ⏸
             </button>

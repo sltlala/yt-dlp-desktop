@@ -653,6 +653,16 @@ fn set_task_format(app: AppHandle, id: String, expression: String) {
     let _ = app.emit("task://update", app.state::<AppState>().snapshot());
 }
 
+/// 把排队中的任务挪到队首（下一个开始）。不在排队时什么都不做。
+#[tauri::command]
+fn prioritize_task(app: AppHandle, id: String) -> bool {
+    let moved = app.state::<Scheduler>().prioritize(&id);
+    if moved {
+        runner::update(&app, &id, |t| t.queue_hint = Some("已优先，下一个开始".into()));
+    }
+    moved
+}
+
 /// 设置单个任务的片段（`--download-sections`），并立刻按新设置重下。
 ///
 /// `input` 为空 = 恢复下载完整视频。输入不合法时返回可读的原因，任务不动。
@@ -1476,6 +1486,7 @@ pub fn run() {
             resume_task,
             set_task_format,
             set_task_sections,
+            prioritize_task,
             remove_record,
             remove_many,
             remove_from_archive,
