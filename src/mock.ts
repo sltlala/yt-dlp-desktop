@@ -177,7 +177,9 @@ export const demoTasks: Task[] = [
     formatExpression: 'bv*[height<=1080]+ba/b[height<=1080]/b',
     container: 'mkv',
     outputDir: 'D:\\Videos',
-    error: '认证失效：Sign in to confirm you are not a bot（cookie 可能已过期）',
+    error:
+      '需要登录：请在「设置 → 账号」配置 Cookie\n' +
+      "[youtube] dQw4w9WgXcQ: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies for the authentication.",
     warnings: [],
     addedAt: now - 9_000_000,
     finishedAt: now - 8_900_000,

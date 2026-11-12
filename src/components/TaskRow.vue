@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import type { Task } from '../types'
 import { POST_PROCESS_LABEL, TASK_STATE_LABEL } from '../types'
 import { useTaskStore } from '../stores/tasks'
-import { cacheBust, fmtBytes, fmtDuration, fmtEta, fmtSpeed, shortenPath } from '../utils'
+import { cacheBust, fmtBytes, fmtDuration, fmtEta, fmtSpeed, shortenPath, splitError } from '../utils'
 import TaskDetail from './TaskDetail.vue'
 
 const props = defineProps<{ task: Task }>()
@@ -168,7 +168,7 @@ const canOpen = computed(() => !!t.value.filepath)
             </span>
           </template>
           <template v-else-if="t.state === 'failed'">
-            <span class="err-text" :title="t.error ?? ''">{{ t.error }}</span>
+            <span class="err-text" :title="t.error ?? ''">{{ splitError(t.error).summary }}</span>
           </template>
           <template v-else-if="t.state === 'completed'">
             <span class="muted">{{ shortenPath(t.filepath ?? '', 1) }}</span>

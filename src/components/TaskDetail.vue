@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import type { Task } from '../types'
 import { useTaskStore } from '../stores/tasks'
 import { api } from '../ipc'
-import { ellipsizePath, fmtBytes, fmtTime, shortenPath } from '../utils'
+import { ellipsizePath, fmtBytes, fmtTime, shortenPath, splitError } from '../utils'
 import FormatPicker from './FormatPicker.vue'
 import PlaylistPicker from './PlaylistPicker.vue'
 
@@ -125,8 +125,11 @@ const rows = computed(() => {
     </div>
 
     <div v-if="t.error" class="err-box">
-      <div class="err-title">失败原因</div>
-      <div>{{ t.error }}</div>
+      <div class="err-title">{{ splitError(t.error).summary }}</div>
+      <details v-if="splitError(t.error).detail" class="err-detail">
+        <summary>原始报错</summary>
+        <code class="mono">{{ splitError(t.error).detail }}</code>
+      </details>
     </div>
 
     <!-- 播放列表：探测完成，等用户勾选（DESIGN §9） -->
@@ -329,7 +332,25 @@ const rows = computed(() => {
 .err-title {
   color: var(--err);
   font-weight: 650;
-  margin-bottom: 4px;
+}
+.err-detail {
+  margin-top: 6px;
+  color: var(--text-dim);
+}
+.err-detail summary {
+  cursor: pointer;
+  user-select: none;
+  width: fit-content;
+}
+.err-detail code {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 6em;
+  overflow-y: auto;
 }
 
 .playlist-box {

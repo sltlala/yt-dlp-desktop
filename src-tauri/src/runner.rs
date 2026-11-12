@@ -150,7 +150,7 @@ fn notify_terminal(app: &AppHandle, t: &Task) {
             let err = t
                 .error
                 .as_deref()
-                .map(|e| truncate(e, 120))
+                .map(|e| truncate(error_summary(e), 60))
                 .unwrap_or_else(|| "下载失败".to_string());
             ("下载失败".to_string(), err)
         }
@@ -452,17 +452,19 @@ pub async fn run_download(app: AppHandle, task_id: String) {
             // 完整视频，任务却红成失败（DESIGN §11.8，B站弹幕那起事故）。
             t.state = "completed".into();
             t.finished_at = Some(crate::state::now_ms());
-            let err = t.error.take().unwrap_or_else(|| format!("yt-dlp 退出码 {code}"));
-            let msg = format!(
-                "成品文件已生成，但 yt-dlp 以退出码 {code} 结束：{err}（多为附加文件失败，不影响视频本体）"
-            );
+            let err = t.error.take().unwrap_or_default();
+            let msg = if err.is_empty() {
+                "视频已下载，但部分附加文件（字幕、封面等）失败".to_string()
+            } else {
+                format!("视频已下载，但部分附加文件失败：{}", error_summary(&err))
+            };
             if t.warnings.len() < 20 && !t.warnings.contains(&msg) {
                 t.warnings.push(msg);
             }
         } else {
             t.state = "failed".into();
             if t.error.is_none() {
-                t.error = Some(format!("yt-dlp 退出码 {code}"));
+                t.error = Some(format!("下载失败（yt-dlp 退出码 {code}）"));
             }
         }
     });
@@ -708,6 +710,7 @@ fn handle_event(app: &AppHandle, task_id: &str, ev: Event) {
 ///
 /// `proxyMode` 三种取值：
 /// - `none`    不使用代理
+            let msg = classify_error(&msg, None);
 /// - `system`  跟随 Windows 系统代理（读注册表）
 /// - `manual`  手动填写的 host/port/协议/认证
 ///
@@ -1124,7 +1127,7 @@ pub async fn run_probe(app: AppHandle, task_id: String) {
         let msg = if detail.is_empty() {
             "未找到 yt-dlp 可执行文件".to_string()
         } else {
-            format!("未找到可用的 yt-dlp。候选：{detail}")
+            format!("未找到可用的 yt-dlp：请在「设置 → 下载器」里更新 yt-dlp\n候选：{detail}")
         };
         update(&app, &task_id, |t| {
             t.state = "failed".into();
@@ -1320,92 +1323,90 @@ fn should_complete_despite_exit(produced: bool, multi_item: bool) -> bool {
 
 /// 把 yt-dlp 的原始报错归类成用户看得懂的原因（DESIGN §6、§14）。
 ///
-/// 不做这层归类，用户只会看到一段 stderr 然后反复重试。
+/// 返回固定两行：**第一行**是一句话的原因加怎么办（列表行只显示这一行，
+/// 必须短到一行放得下）；**第二行**是原始报错，只在任务详情里以小字展示。
+///
+/// 原始报错不能丢：自动重试（`should_auto_retry`）和 Cloudflare 识别都是
+/// 靠匹配其中的英文原文来判断的。
 fn classify_error(stderr: &str, code: Option<i32>) -> String {
     let pick = |needle: &str| stderr.lines().find(|l| l.contains(needle));
 
-    // PyInstaller 引导器报错。最常见的成因是 onedir 构建被单独复制，
-    // 丢了同级的 `_internal\` 目录——报错文本里只有一句 DLL 加载失败，很难猜。
+    // PyInstaller 引导器报错：最常见的成因是 onedir 构建被单独复制，丢了 `_internal\`。
     if let Some(l) = pick("Failed to load Python DLL").or_else(|| pick("[PYI-")) {
-        return format!(
-            "yt-dlp 副本不完整（onedir 构建缺少 _internal 目录）。\
-             请改用官方发布的 onefile 版 yt-dlp.exe：{}",
-            l.trim()
-        );
+        return with_raw("yt-dlp 文件不完整：请在设置里重新更新", l);
     }
     if let Some(l) = pick("Sign in to confirm") {
-        return format!(
-            "需要登录验证。两种常见原因，按可能性排序：\n\
-             ① 没配 cookie —— 去「设置 → 网络与账号 → Cookie」，选「从浏览器」并选 Firefox；\n\
-             ② 代理出口 IP 被判定为机房 / 机器人 —— 换用住宅 IP 的节点。\n\
-             原始信息：{}",
-            l.trim()
-        );
+        return with_raw("需要登录：请在「设置 → 账号」配置 Cookie", l);
+    let with_raw = |summary: &str, line: &str| {
+        let raw = line.trim();
+        let raw = raw.strip_prefix("ERROR:").unwrap_or(raw).trim();
+        format!("{summary}\n{raw}")
+    };
     }
     if let Some(l) = pick("Private video")
         .or_else(|| pick("members-only"))
         .or_else(|| pick("This video is available to this channel's members"))
     {
-        return format!("需要登录或会员权限：{}", l.trim());
+        return with_raw("私有或会员视频：需配置有权限账号的 Cookie", l);
     }
     // 站点拒绝了我们。**必须排在「网络不可达」之前**：那句
     // `Unable to download webpage` 里经常裹着 HTTP 状态码，
     // 而「站点答了、只是不肯给」和「根本连不上」是两件完全不同的事。
     if let Some(l) = pick("Cloudflare anti-bot challenge") {
-        return format!(
-            "这个站点有 Cloudflare 反爬拦截（HTTP 403）。\n\
-             已经自动带着浏览器指纹重试过一次了；还是不行的话，换一个代理出口 IP，\
-             或者到「设置 → 网络与账号」配上 cookie 再试。\n\
-             原始信息：{}",
-            l.trim()
-        );
+        return with_raw("被站点反爬拦截：换个代理或配置 Cookie", l);
     }
     if let Some(l) = pick("Unable to download webpage").or_else(|| pick("Failed to resolve")) {
-        // ⚠️ 实测踩到：`ERROR: [generic] …: Unable to download webpage: HTTP Error 403`
-        // 被判成「网络不可达（检查代理设置）」——站点明明答了，只是拒绝了我们，
-        // 这句提示会把人引到完全相反的方向去查代理。
-        if l.contains("HTTP Error 4") || l.contains("HTTP Error 5") {
-            return format!(
-                "站点拒绝了这次请求（HTTP 错误，不是网络不通）。\n\
-                 403 / 451 常见于反爬或地区限制：可以到「设置 → 网络与账号」\
-                 打开「绕过 Cloudflare 拦截」再试，或者换一个代理出口 IP。\n\
-                 原始信息：{}",
-                l.trim()
+        // ⚠️ 实测踩到：`Unable to download webpage: HTTP Error 403` 被判成「网络不可达」——
+        // 站点明明答了，只是拒绝了我们，这句提示会把人引到完全相反的方向去查代理。
+        if let Some(status) = http_status(l).filter(|s| *s >= 400) {
+            return with_raw(
+                &format!("站点拒绝访问（HTTP {status}）：换个代理再试"),
+                l,
             );
         }
-        return format!("网络不可达（检查代理设置）：{}", l.trim());
+        return with_raw("网络连接失败：请检查网络或代理", l);
     }
-    // YouTube 对「可疑请求」的两种降级响应。
     if let Some(l) = pick("needs to be reloaded") {
-        return format!(
-            "YouTube 返回了「需要重载页面」——站点对可疑请求的降级响应。\n\
-             与具体视频无关。常见原因（按经验排序）：\n\
-             ① **短时间请求过多被限流** —— 等几分钟再试往往就恢复；\n\
-             ② 代理出口是机房 IP（Azure/AWS 等）—— 换住宅 IP 的节点；\n\
-             ③ cookie 对应的会话被判定异常 —— 到浏览器里重新登录一次。\n\
-             原始信息：{}",
-            l.trim()
-        );
+        return with_raw("YouTube 暂时限流：稍等几分钟再试", l);
     }
     if let Some(l) = pick("Requested format is not available") {
-        return format!(
-            "所选格式不可用。\n\
-             注意：如果链接来自 YouTube，这通常**不是**格式设置的问题——\n\
-             拿不到真实流时（只返回 storyboard 预览图）也会报这个错。\n\
-             可以用 `yt-dlp -F <链接>` 看看实际列出了什么。\n\
-             原始信息：{}",
-            l.trim()
-        );
+        return with_raw("所选格式不可用：试试「最佳画质」", l);
     }
-    // 站点用了 Cloudflare 反爬：yt-dlp 自己给出的解法是开指纹模拟，
-    // 但那是个命令行参数，界面用户够不着——所以这里直接指到那个开关上。
     if let Some(l) = pick("Unsupported URL") {
-        return format!("不支持的链接：{}", l.trim());
+        return with_raw("不支持这个链接", l);
     }
-    if let Some(l) = stderr.lines().find(|l| l.starts_with("ERROR:")) {
-        return l.trim().to_string();
+    if let Some(l) = pick("No space left on device").or_else(|| pick("Errno 28")) {
+        return with_raw("磁盘空间不足：请清理或换个输出目录", l);
     }
-    format!("yt-dlp 退出码 {}", code.unwrap_or(-1))
+    // 如果链接来自 YouTube，这通常不是格式设置的问题——拿不到真实流时
+    // （只返回 storyboard 预览图）也会报这个错。
+    if let Some(l) = pick("Permission denied").or_else(|| pick("Errno 13")) {
+        return with_raw("没有写入权限：换个目录或关闭占用的程序", l);
+    }
+    // 认不出的报错：第一行放截短的原文，完整的放第二行
+    let raw = stderr
+        .lines()
+        .find(|l| l.trim_start().starts_with("ERROR:"))
+        .or_else(|| stderr.lines().find(|l| !l.trim().is_empty()));
+    match raw {
+        Some(l) => {
+            let text = l.trim();
+            let text = text.strip_prefix("ERROR:").unwrap_or(text).trim();
+            with_raw(&format!("下载失败：{}", truncate(text, 30)), l)
+        }
+        None => format!("下载失败（yt-dlp 退出码 {}）", code.unwrap_or(-1)),
+    }
+}
+
+/// 从 `HTTP Error 403: Forbidden` 这类文本里取出状态码。
+fn http_status(line: &str) -> Option<u16> {
+    let rest = &line[line.find("HTTP Error ")? + "HTTP Error ".len()..];
+    rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
+/// 报错的第一行（一句话说明）。列表行与警告里只用这一行。
+fn error_summary(err: &str) -> &str {
+    err.lines().next().unwrap_or(err)
 }
 
 /// 本地重复检测（ROADMAP §F17）：在历史任务里找「同 media id 且成品仍在磁盘」
@@ -1642,7 +1643,7 @@ mod tests {
             "ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge",
             Some(1),
         );
-        assert!(classified.contains("Cloudflare 反爬拦截"), "实际: {classified}");
+        assert!(error_summary(&classified).contains("反爬拦截"), "实际: {classified}");
         assert!(is_cloudflare_challenge(&classified));
         // 别的 403 不能误判
         assert!(!is_cloudflare_challenge("ERROR: HTTP Error 403: Forbidden"));
@@ -1657,13 +1658,50 @@ mod tests {
         let real = "ERROR: [generic] watch?v=407946: Unable to download webpage: \
                     HTTP Error 403: Forbidden";
         let msg = classify_error(real, Some(1));
-        assert!(!msg.contains("网络不可达"), "403 不该说成网络不可达：{msg}");
-        assert!(msg.contains("拒绝了这次请求"), "实际: {msg}");
+        assert!(!msg.contains("网络连接失败"), "403 不该说成网络不通：{msg}");
+        assert_eq!(
+            error_summary(&msg),
+            "站点拒绝访问（HTTP 403）：换个代理再试"
+        );
 
-        // 真的连不上时仍然要说「检查代理设置」
+        // 真的连不上时仍然要指向网络/代理
         let dead = "ERROR: Unable to download webpage: <urlopen error [Errno 111] Connection refused>";
         let msg = classify_error(dead, Some(1));
-        assert!(msg.contains("网络不可达"), "实际: {msg}");
+        assert!(error_summary(&msg).contains("网络连接失败"), "实际: {msg}");
+    }
+
+    /// 第一行要短到列表里一行放得下；原文必须保留在第二行，
+    /// 自动重试与 Cloudflare 识别都靠匹配原文。
+    #[test]
+    fn classified_error_is_one_short_line_plus_raw() {
+        let cases = [
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot",
+            "ERROR: [youtube] abc: Requested format is not available. Use --list-formats",
+            "ERROR: Unsupported URL: https://example.com/x",
+            "ERROR: [generic] x: Unable to download webpage: HTTP Error 451: Unavailable",
+            "ERROR: [download] Got error: [Errno 28] No space left on device",
+            "ERROR: some brand new failure nobody has classified yet, with a very long \
+             explanation that keeps going and going",
+            // 下载阶段解析器已去掉 `ERROR:` 前缀
+            "[youtube] abc: Sign in to confirm you're not a bot",
+        ];
+        for raw in cases {
+            let msg = classify_error(raw, Some(1));
+            let mut lines = msg.lines();
+            let summary = lines.next().unwrap();
+            // 按显示宽度算：中文占两格，ASCII 占一格。约 28 个汉字是窄窗口里一行放得下的上限。
+            let width: usize = summary.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+            assert!(width <= 56, "第一行太长（宽 {width}）：{summary}");
+            let rest = lines.next().expect("应保留原始报错");
+            assert!(!rest.starts_with("ERROR:"), "原文里的 ERROR: 前缀没必要展示：{rest}");
+            assert!(raw.contains(rest), "原文应原样保留：{rest}");
+        }
+        assert!(should_auto_retry_is_deterministic(&classify_error(cases[0], Some(1))));
+    }
+
+    fn should_auto_retry_is_deterministic(text: &str) -> bool {
+        should_auto_retry("failed", 0, Some(text), false, false) == RetryAction::None
+            && is_deterministic_error(text)
     }
 
     /// Cloudflare 那句话里也含 `Unable to download webpage` 之外的形式，
@@ -1673,8 +1711,8 @@ mod tests {
         let both = "ERROR: Unable to download webpage: HTTP Error 403: Forbidden\n\
                     ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge";
         let msg = classify_error(both, Some(1));
-        assert!(msg.contains("Cloudflare 反爬拦截"), "实际: {msg}");
-        assert!(!msg.contains("网络不可达"));
+        assert!(error_summary(&msg).contains("反爬拦截"), "实际: {msg}");
+        assert!(!msg.contains("网络连接失败"));
     }
 
     /// 没带 Cloudflare 标记、但确实是 generic 提取器被 403 挡了——

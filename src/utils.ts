@@ -140,6 +140,18 @@ export function ellipsizePath(p: string, maxWidth = 84): string {
   return dir + ellipsizeMiddle(name, maxWidth - displayWidth(dir))
 }
 
+/**
+ * 把后端的报错拆成「一句话说明」与「原始报错」。
+ *
+ * 后端约定第一行是给人看的短句，后面是 yt-dlp 原文（见 `runner::classify_error`）。
+ */
+export function splitError(err: string | null | undefined): { summary: string; detail: string } {
+  if (!err) return { summary: '', detail: '' }
+  const i = err.indexOf('\n')
+  if (i < 0) return { summary: err.trim(), detail: '' }
+  return { summary: err.slice(0, i).trim(), detail: err.slice(i + 1).trim() }
+}
+
 export function basename(p: string): string {
   const parts = p.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? p
