@@ -29,6 +29,14 @@ export function isTauri(): boolean {
 
 type Listener = (tasks: Task[]) => void
 type PatchListener = (task: Task) => void
+type ProgressListener = (p: ProgressPatch) => void
+
+/** 进度专用增量：只带进度字段，最高频的事件不必传整个任务。 */
+export interface ProgressPatch {
+  id: string
+  progress: Task['progress']
+  usedAria2c: boolean
+}
 
 export interface ToolInfo {
   found: boolean
@@ -74,6 +82,8 @@ const tauriBackend = {
    * 增删任务等改变列表结构的变化仍走 `onChange` 的全量快照。
    */
   onPatch: (l: PatchListener) => listen<Task>('task://patch', (e) => l(e.payload)),
+  onProgress: (l: ProgressListener) =>
+    listen<ProgressPatch>('task://progress', (e) => l(e.payload)),
   addUrl: (url: string) => invoke<Task>('add_url', { url }),
   /** 批量添加（多行粘贴 / 拖入列表）。返回成功条数与失败明细（ROADMAP §F3）。 */
   addUrls: (urls: string[]) =>
@@ -225,14 +235,16 @@ class MockBackend {
   private tasks: Task[] = structuredClone(demoTasks)
   private settings: Settings = structuredClone(defaultSettings)
   private listeners = new Set<Listener>()
+  private patchListeners = new Set<PatchListener>()
+  private progressListeners = new Set<ProgressListener>()
 
   constructor() {
     // 只需持续推进，无需持有句柄（应用生命周期内一直运行）。
     window.setInterval(() => this.tick(), 500)
   }
 
+  /** 与真实后端一致：进度走 progress，状态变化走 patch，增删才推全量。 */
   private tick() {
-    let changed = false
     for (const t of this.tasks) {
       if (t.state === 'downloading') {
         const total = t.progress.total
@@ -240,7 +252,7 @@ class MockBackend {
         if (total === null) {
           // 不确定态：只推进已下载字节，不编造 total。
           t.progress.downloaded = done + 2_500_000
-          changed = true
+          this.emitProgress(t)
           continue
         }
         const next = Math.min(total, done + (t.progress.speed ?? 4_000_000) * 0.5)
@@ -251,8 +263,10 @@ class MockBackend {
           // finished ≠ 完成：后面还有合并/嵌入（HANDOFF §3.2）。
           t.state = 'postprocessing'
           t.postProcess = 'Merger'
+          this.emitPatch(t)
+        } else {
+          this.emitProgress(t)
         }
-        changed = true
       } else if (t.state === 'postprocessing') {
         const order: Task['postProcess'][] = [
           'Merger',
@@ -264,16 +278,16 @@ class MockBackend {
         const i = order.indexOf(t.postProcess)
         if (i >= 0 && i < order.length - 1 && Math.random() > 0.55) {
           t.postProcess = order[i + 1]
+          this.emitPatch(t)
         } else if (i === order.length - 1 && Math.random() > 0.6) {
           t.state = 'completed'
           t.postProcess = null
           t.finishedAt = Date.now()
           t.filepath = `${t.outputDir}\\${t.title.slice(0, 40)} [${t.id.slice(-4)}].${t.container}`
+          this.emitPatch(t)
         }
-        changed = true
       }
     }
-    if (changed) this.emit()
   }
 
   private emit() {
@@ -281,10 +295,33 @@ class MockBackend {
     for (const l of this.listeners) l(snapshot)
   }
 
+  private emitPatch(t: Task) {
+    for (const l of this.patchListeners) l(structuredClone(t))
+  }
+
+  private emitProgress(t: Task) {
+    const p: ProgressPatch = {
+      id: t.id,
+      progress: { ...t.progress },
+      usedAria2c: t.usedAria2c ?? false,
+    }
+    for (const l of this.progressListeners) l(p)
+  }
+
   onChange(l: Listener): () => void {
     this.listeners.add(l)
     l(structuredClone(this.tasks))
     return () => this.listeners.delete(l)
+  }
+
+  onPatch(l: PatchListener): () => void {
+    this.patchListeners.add(l)
+    return () => this.patchListeners.delete(l)
+  }
+
+  onProgress(l: ProgressListener): () => void {
+    this.progressListeners.add(l)
+    return () => this.progressListeners.delete(l)
   }
 
   async addUrl(url: string): Promise<Task> {
@@ -810,8 +847,8 @@ export const api = isTauri()
   ? tauriBackend
   : {
       onChange: (l: Listener) => Promise.resolve(mock().onChange(l)),
-      // 演示后端每次都推全量快照，用不到增量通道
-      onPatch: (_l: PatchListener) => Promise.resolve(() => {}),
+      onPatch: (l: PatchListener) => Promise.resolve(mock().onPatch(l)),
+      onProgress: (l: ProgressListener) => Promise.resolve(mock().onProgress(l)),
       addUrl: (url: string) => mock().addUrl(url),
       addUrls: (urls: string[]) => mock().addUrls(urls),
       pause: (id: string) => mock().pause(id),

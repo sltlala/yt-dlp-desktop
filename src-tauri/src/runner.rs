@@ -1308,20 +1308,39 @@ async fn probe_once(
 ///
 /// **不在这里切状态**：`finished` 只表示下载完成，后面还有合并与嵌入（HANDOFF §3.2），
 /// 状态由后处理标记或进程退出决定。
+/// 进度专用的增量事件（`task://progress`）。
+///
+/// 进度是最高频的事件；走 `task://patch` 的话每条都要克隆并序列化整个任务，
+/// 包括格式表和播放列表条目。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgressPatch<'a> {
+    id: &'a str,
+    progress: Progress,
+    used_aria2c: bool,
+}
+
 fn apply_progress(app: &AppHandle, task_id: &str, p: ytdlp_core::Progress, from_aria2c: bool) {
-    let (downloaded, total, speed, eta) = (p.downloaded, p.total, p.speed, p.eta);
-    update(app, task_id, |t| {
-        t.progress = Progress {
-            downloaded,
-            total,
-            speed,
-            eta,
-        };
+    let progress = Progress {
+        downloaded: p.downloaded,
+        total: p.total,
+        speed: p.speed,
+        eta: p.eta,
+    };
+    let used_aria2c = app.state::<AppState>().with_task(task_id, |t| {
+        t.progress = progress.clone();
         if from_aria2c {
             // 界面据此提示「进度来自 aria2c，可能不精确」（DESIGN §11.6）。
             t.used_aria2c = true;
         }
+        t.used_aria2c
     });
+    if let Some(used_aria2c) = used_aria2c {
+        let _ = app.emit(
+            "task://progress",
+            ProgressPatch { id: task_id, progress, used_aria2c },
+        );
+    }
 }
 
 fn fail(app: &AppHandle, task_id: &str, msg: &str) {

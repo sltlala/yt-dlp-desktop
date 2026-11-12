@@ -123,6 +123,12 @@ export const useTaskStore = defineStore('tasks', {
           // 找不到说明这条已被删除或全量快照还没到，丢弃，以免把删掉的任务复活
           if (i >= 0) this.tasks[i] = t
         })
+        await api.onProgress((p) => {
+          const t = this.tasks.find((x) => x.id === p.id)
+          if (!t) return
+          t.progress = p.progress
+          t.usedAria2c = p.usedAria2c
+        })
         await api.onChange((tasks) => {
           this.tasks = tasks
         })
