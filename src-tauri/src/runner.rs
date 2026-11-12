@@ -1307,6 +1307,44 @@ async fn probe_once(
     }
 }
 
+/// 订阅检查用：只拿频道 / 播放列表**最新的 `limit` 条**扁平条目。
+///
+/// 频道动辄几千个视频，不限条数的话每次检查都要把整页翻完。
+pub(crate) async fn probe_feed(
+    url: &str,
+    settings: &Value,
+    limit: usize,
+) -> Result<ytdlp_core::MediaInfo, String> {
+    let exe = paths::resolve_ytdlp().ok_or("未找到可用的 yt-dlp")?;
+    let mut args = ytdlp_core::build_probe_args(
+        url,
+        proxy_for(settings, url).as_deref(),
+        cookies_of(settings).as_ref(),
+        true,
+        &js_of(settings),
+        None,
+        impersonate_of(settings),
+    );
+    // 选项必须在 `--` 之前，`--` 之后只能是 URL
+    let at = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    args.splice(at..at, ["--playlist-end".to_string(), limit.to_string()]);
+    log_command("订阅检查", "-", &exe, &args);
+
+    let o = tokio::process::Command::new(&exe)
+        .args(&args)
+        .stdin(Stdio::null())
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
+        .output()
+        .await
+        .map_err(|e| format!("无法启动 yt-dlp：{e}"))?;
+    if !o.status.success() {
+        let raw = crate::text::decode_console(&o.stderr);
+        return Err(classify_error(&raw, o.status.code()));
+    }
+    ytdlp_core::parse_info_json(&crate::text::decode_console(&o.stdout))
+}
+
 /// 写入进度。
 ///
 /// **不在这里切状态**：`finished` 只表示下载完成，后面还有合并与嵌入（HANDOFF §3.2），

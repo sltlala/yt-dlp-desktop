@@ -267,6 +267,7 @@ export const defaultSettings: Settings = {
   splitChapters: false,
   sponsorblock: 'off',
   closeToTray: true,
+  subscriptionIntervalHours: 6,
   execCommand: '',
   notifyOnComplete: true,
   notifyOnFailure: true,

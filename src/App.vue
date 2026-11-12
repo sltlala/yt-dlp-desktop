@@ -4,6 +4,7 @@ import { useTaskStore, type Filter } from './stores/tasks'
 import AddUrlBar from './components/AddUrlBar.vue'
 import TaskRow from './components/TaskRow.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import SubscriptionsPanel from './components/SubscriptionsPanel.vue'
 import type { SettingsTab } from './types'
 import { useVirtualList } from './composables/useVirtualList'
 import { fmtBytes, fmtSpeed, shortenPath } from './utils'
@@ -26,7 +27,9 @@ const panel = new URLSearchParams(window.location.search).get('panel')
  * 之前做成抽屉时，抽屉盖住的那半边窗口完全浪费，而且「设置」和任务列表
  * 是同一层级的导航目标，用两种不同的交互承载同一层级的东西会让人困惑。
  */
-const view = ref<'tasks' | 'settings'>(panel === 'settings' ? 'settings' : 'tasks')
+const view = ref<'tasks' | 'subscriptions' | 'settings'>(
+  panel === 'settings' ? 'settings' : panel === 'subscriptions' ? 'subscriptions' : 'tasks',
+)
 /** 从别处（如「缺少 ffmpeg」横幅）跳进设置时，直接落在相关的那一页。 */
 const settingsTab = ref<SettingsTab | undefined>(undefined)
 
@@ -378,6 +381,13 @@ watch(
 
         <button
           class="nav-item"
+          :class="{ active: view === 'subscriptions' }"
+          @click="view = 'subscriptions'"
+        >
+          <span>订阅</span>
+        </button>
+        <button
+          class="nav-item"
           :class="{ active: view === 'settings' }"
           @click="openSettings()"
         >
@@ -409,6 +419,7 @@ watch(
         :initial-tab="settingsTab"
         @close="view = 'tasks'"
       />
+      <SubscriptionsPanel v-else-if="view === 'subscriptions'" />
 
       <template v-else>
         <header class="topbar">

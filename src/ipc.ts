@@ -18,6 +18,7 @@ import type {
   FormatPreset,
   JsRuntimeInfo,
   Settings,
+  Subscription,
   Task,
   TempDirInUse,
 } from './types'
@@ -96,6 +97,16 @@ const tauriBackend = {
   setAfterAll: (mode: AfterAllMode) => invoke<AfterAllStatus>('set_after_all', { mode }),
   onAfterAll: (l: (s: AfterAllStatus) => void) =>
     listen<AfterAllStatus>('afterall://status', (e) => l(e.payload)),
+  listSubscriptions: () => invoke<Subscription[]>('list_subscriptions'),
+  /** 会先探测一次链接；单个视频或打不开时 reject 一条可读的原因。 */
+  addSubscription: (url: string) => invoke<Subscription>('add_subscription', { url }),
+  removeSubscription: (id: string) => invoke<void>('remove_subscription', { id }),
+  setSubscriptionEnabled: (id: string, enabled: boolean) =>
+    invoke<void>('set_subscription_enabled', { id, enabled }),
+  /** 不传 id = 检查全部已启用的。返回新加入下载的条数。 */
+  checkSubscriptions: (id?: string) => invoke<number>('check_subscriptions', { id: id ?? null }),
+  onSubscriptions: (l: (s: Subscription[]) => void) =>
+    listen<Subscription[]>('subscriptions://update', (e) => l(e.payload)),
   addUrl: (url: string) => invoke<Task>('add_url', { url }),
   /** 批量添加（多行粘贴 / 拖入列表）。返回成功条数与失败明细（ROADMAP §F3）。 */
   addUrls: (urls: string[]) =>
@@ -544,6 +555,24 @@ class MockBackend {
     return this.afterAll
   }
 
+  subscriptions: Subscription[] = []
+
+  async addSubscription(url: string): Promise<Subscription> {
+    if (!/^https?:\/\//.test(url.trim())) throw '不是有效链接'
+    if (this.subscriptions.some((s) => s.url === url.trim())) throw '已经订阅过这个链接'
+    const sub: Subscription = {
+      id: `s-${Date.now()}`,
+      url: url.trim(),
+      title: '演示频道',
+      enabled: true,
+      lastChecked: Math.floor(Date.now() / 1000),
+      lastError: null,
+      lastNew: 0,
+    }
+    this.subscriptions.push(sub)
+    return sub
+  }
+
   async prioritize(id: string): Promise<boolean> {
     const t = this.tasks.find((x) => x.id === id)
     if (!t || !['pending', 'queued'].includes(t.state)) return false
@@ -899,6 +928,20 @@ export const api = isTauri()
       getAfterAll: () => Promise.resolve(mock().afterAll),
       setAfterAll: (mode: AfterAllMode) => mock().setAfterAll(mode),
       onAfterAll: (_l: (s: AfterAllStatus) => void) => Promise.resolve(() => {}),
+      listSubscriptions: () => Promise.resolve([...mock().subscriptions]),
+      addSubscription: (url: string) => mock().addSubscription(url),
+      removeSubscription: async (id: string) => {
+        mock().subscriptions = mock().subscriptions.filter((s) => s.id !== id)
+      },
+      setSubscriptionEnabled: async (id: string, enabled: boolean) => {
+        const s = mock().subscriptions.find((x) => x.id === id)
+        if (s) s.enabled = enabled
+      },
+      checkSubscriptions: async (_id?: string) => {
+        for (const s of mock().subscriptions) s.lastChecked = Math.floor(Date.now() / 1000)
+        return 0
+      },
+      onSubscriptions: (_l: (s: Subscription[]) => void) => Promise.resolve(() => {}),
       addUrl: (url: string) => mock().addUrl(url),
       addUrls: (urls: string[]) => mock().addUrls(urls),
       pause: (id: string) => mock().pause(id),

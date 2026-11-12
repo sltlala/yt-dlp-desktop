@@ -267,6 +267,8 @@ export interface Settings {
   sponsorblock: 'off' | 'mark' | 'remove'
   /** 点关闭按钮时只隐藏到托盘，下载继续。 */
   closeToTray: boolean
+  /** 订阅多久自动检查一次（小时）；0 = 只手动检查。 */
+  subscriptionIntervalHours: number
   /**
    * 下载后执行命令（ROADMAP §F16）：`--exec`。留空 = 不执行。
    * ⚠️ 会以本机权限执行，界面必须做安全确认。
@@ -386,6 +388,19 @@ export interface FormatOption {
   filesize: number | null
   tbr: number | null
   note: string
+}
+
+/** 频道 / 播放列表订阅。 */
+export interface Subscription {
+  id: string
+  url: string
+  title: string
+  enabled: boolean
+  /** Unix 秒。 */
+  lastChecked: number | null
+  lastError: string | null
+  /** 最近一次检查新加入下载的条数。 */
+  lastNew: number
 }
 
 /** 设置页的分页。从别处跳进设置时用它直接落到相关的那一页。 */

@@ -3,6 +3,9 @@
 //! 设计上刻意保持「薄」：所有参数构造与输出解析都在 `ytdlp-core` 里，
 //! 这里只负责进程生命周期、持久化与前后端桥接。
 
+// `default_settings` 的 `json!` 字面量键很多，默认的 128 层宏展开不够用
+#![recursion_limit = "256"]
+
 mod afterall;
 mod clipboard;
 mod cookies;
@@ -16,6 +19,7 @@ mod scheduler;
 mod shell;
 mod state;
 mod store;
+mod subscribe;
 mod sysproxy;
 mod text;
 mod tray;
@@ -88,6 +92,8 @@ fn default_settings() -> Value {
         "sponsorblock": "off",
         // 点关闭按钮时只隐藏到托盘，下载继续
         "closeToTray": true,
+        // 订阅多久自动检查一次；0 = 只手动检查
+        "subscriptionIntervalHours": 6,
         // ── 下载后动作（ROADMAP §F16）──
         // 完成后执行的命令（--exec）。留空 = 不执行。
         // ⚠️ 会以本机权限执行，界面必须做安全确认，绝不静默启用。
@@ -474,7 +480,7 @@ fn add_urls(app: AppHandle, urls: Vec<String>) -> BatchAddResult {
 
 /// `add_url` / `add_urls` 共用的建任务逻辑。
 /// 返回任务本体；`Err` 只在「极端情况下」出现（当前实现不会，为批量场景预留）。
-fn add_url_inner(app: &AppHandle, url: &str) -> Result<Task, String> {
+pub(crate) fn add_url_inner(app: &AppHandle, url: &str) -> Result<Task, String> {
     let settings = {
         let state = app.state::<AppState>();
         state.settings.lock().map(|s| s.clone()).unwrap_or_else(|_| default_settings())
@@ -1461,6 +1467,8 @@ pub fn run() {
 
             app.manage(afterall::AfterAll::default());
             afterall::spawn(app.handle().clone());
+            app.manage(subscribe::Subscriptions::load());
+            subscribe::spawn(app.handle().clone());
             if let Err(e) = tray::init(app.handle()) {
                 logfile::error(format!("创建托盘图标失败：{e}"));
             }
@@ -1488,6 +1496,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             afterall::get_after_all,
             afterall::set_after_all,
+            subscribe::list_subscriptions,
+            subscribe::add_subscription,
+            subscribe::remove_subscription,
+            subscribe::set_subscription_enabled,
+            subscribe::check_subscriptions,
             get_settings,
             save_settings,
             list_tasks,
