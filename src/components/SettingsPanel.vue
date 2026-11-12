@@ -1117,6 +1117,16 @@ const templateWarning = computed(() => {
             <span>按章节拆分成多个文件<em>长视频会拆成每章一个文件，显著增加后处理时间</em></span>
           </label>
 
+          <h3>SponsorBlock</h3>
+          <label class="field">
+            <span>赞助片段<em>只对 YouTube 生效，片段数据来自社区标注</em></span>
+            <select v-model="s.sponsorblock">
+              <option value="off">不处理</option>
+              <option value="mark">标成章节（视频不变）</option>
+              <option value="remove">剪掉赞助、自我推广、求关注片段</option>
+            </select>
+          </label>
+
           <h3>下载后动作</h3>
           <label class="field">
             <span>完成后执行命令<em>留空 = 不执行</em></span>

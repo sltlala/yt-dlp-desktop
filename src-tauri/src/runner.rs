@@ -117,6 +117,7 @@ pub fn spec_from_settings(settings: &Value, url: &str, task_id: &str) -> Downloa
     spec.impersonate = impersonate_of(settings);
     // 章节切分（ROADMAP §F15）
     spec.split_chapters = b("splitChapters");
+    spec.sponsorblock = ytdlp_core::SponsorBlock::from_setting(s("sponsorblock").as_deref().unwrap_or(""));
     // 下载后执行（ROADMAP §F16）。用户显式填的命令，宿主侧已做过安全确认。
     spec.exec = s("execCommand").filter(|c| !c.trim().is_empty());
     spec

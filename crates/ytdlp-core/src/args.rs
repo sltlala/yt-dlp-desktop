@@ -383,6 +383,30 @@ fn push_js_args(a: &mut Vec<String>, js: &JsRuntimeOptions) {
     }
 }
 
+/// SponsorBlock（只对 YouTube 生效，片段数据来自社区标注）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SponsorBlock {
+    #[default]
+    Off,
+    /// 把所有类别标成章节，视频本身不动。
+    Mark,
+    /// 剪掉赞助、自我推广、求关注三类片段。片头片尾、预告等保留——剪掉它们常让人觉得「内容少了」。
+    Remove,
+}
+
+impl SponsorBlock {
+    pub fn from_setting(s: &str) -> Self {
+        match s {
+            "mark" => Self::Mark,
+            "remove" => Self::Remove,
+            _ => Self::Off,
+        }
+    }
+}
+
+/// 「剪掉」模式下移除的类别。
+pub const SPONSORBLOCK_REMOVE_CATEGORIES: &str = "sponsor,selfpromo,interaction";
+
 /// 一次下载任务的全部输入。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadSpec {
@@ -456,6 +480,7 @@ pub struct DownloadSpec {
     /// 片段下载：已规范化的 `--download-sections` 值（见 [`crate::parse_sections`]）。
     /// 空 = 下载整个视频。
     pub sections: Vec<String>,
+    pub sponsorblock: SponsorBlock,
 }
 
 /// 把勾选的下标（0-based）转成 `--playlist-items` 的值。
@@ -525,6 +550,7 @@ impl DownloadSpec {
             exec: None,
             ffmpeg_location: None,
             sections: Vec::new(),
+            sponsorblock: SponsorBlock::Off,
         }
     }
 
@@ -542,6 +568,7 @@ impl DownloadSpec {
                     || self.embed.any()
                     || self.split_chapters
                     || !self.sections.is_empty()
+                    || self.sponsorblock != SponsorBlock::Off
             }
         }
     }
@@ -762,6 +789,17 @@ pub fn build_download_args(spec: &DownloadSpec) -> Vec<String> {
         for s in &spec.sections {
             a.push("--download-sections".into());
             a.push(s.clone());
+        }
+        match spec.sponsorblock {
+            SponsorBlock::Off => {}
+            SponsorBlock::Mark => {
+                a.push("--sponsorblock-mark".into());
+                a.push("all".into());
+            }
+            SponsorBlock::Remove => {
+                a.push("--sponsorblock-remove".into());
+                a.push(SPONSORBLOCK_REMOVE_CATEGORIES.into());
+            }
         }
     }
     push_proxy(&mut a, spec.proxy.as_deref());
@@ -1039,6 +1077,35 @@ mod tests {
         s.split_chapters = false;
         s.sections = vec!["*0:00:10-0:00:20".into()];
         assert!(s.needs_ffmpeg(), "片段由 ffmpeg 截取");
+    }
+
+    #[test]
+    fn sponsorblock_modes() {
+        let flag = |mode: SponsorBlock| {
+            let mut s = spec();
+            s.sponsorblock = mode;
+            let a = build_download_args(&s);
+            a.windows(2)
+                .find(|w| w[0].starts_with("--sponsorblock"))
+                .map(|w| format!("{} {}", w[0], w[1]))
+        };
+        assert_eq!(flag(SponsorBlock::Off), None);
+        assert_eq!(flag(SponsorBlock::Mark).as_deref(), Some("--sponsorblock-mark all"));
+        assert_eq!(
+            flag(SponsorBlock::Remove).as_deref(),
+            Some("--sponsorblock-remove sponsor,selfpromo,interaction")
+        );
+        assert_eq!(SponsorBlock::from_setting("remove"), SponsorBlock::Remove);
+        assert_eq!(SponsorBlock::from_setting("whatever"), SponsorBlock::Off);
+    }
+
+    #[test]
+    fn sponsorblock_skipped_for_subs_only() {
+        let mut s = spec();
+        s.sponsorblock = SponsorBlock::Remove;
+        s.preset = Preset::SubsOnly;
+        assert!(!build_download_args(&s).iter().any(|x| x.starts_with("--sponsorblock")));
+        assert!(!s.needs_ffmpeg());
     }
 
     #[test]

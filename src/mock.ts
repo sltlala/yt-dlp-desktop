@@ -265,6 +265,7 @@ export const defaultSettings: Settings = {
   preferAcodec: '',
   impersonate: false,
   splitChapters: false,
+  sponsorblock: 'off',
   execCommand: '',
   notifyOnComplete: true,
   notifyOnFailure: true,

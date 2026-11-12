@@ -82,6 +82,8 @@ fn default_settings() -> Value {
         // ── 章节切分（ROADMAP §F15）──
         // 长视频按章节拆成多个文件。默认关：会显著增加后处理时间。
         "splitChapters": false,
+        // SponsorBlock：off / mark（标成章节）/ remove（剪掉赞助等片段）。只对 YouTube 生效。
+        "sponsorblock": "off",
         // ── 下载后动作（ROADMAP §F16）──
         // 完成后执行的命令（--exec）。留空 = 不执行。
         // ⚠️ 会以本机权限执行，界面必须做安全确认，绝不静默启用。

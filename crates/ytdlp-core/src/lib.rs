@@ -24,6 +24,7 @@ pub use args::{
     build_download_args, build_probe_args, format_expression_for, playlist_items_spec,
     preset_expression, preset_expression_with, progress_template, resolve_container, AudioFormat,
     CodecPreference, Container, CookieSource, DownloadSpec, EmbedOptions, JsRuntimeOptions, Preset,
+    SponsorBlock,
     AUDIO_CODEC_CHOICES, DEFAULT_SUB_LANGS, FILEPATH_FILE, JS_RUNTIMES, LEGACY_DEFAULT_SUB_LANGS,
     VIDEO_CODEC_CHOICES,
 };

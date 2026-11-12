@@ -263,6 +263,8 @@ export interface Settings {
   impersonate: boolean
   /** 章节切分（ROADMAP §F15）：长视频按章节拆成多个文件。 */
   splitChapters: boolean
+  /** SponsorBlock：标成章节，或剪掉赞助 / 自我推广 / 求关注片段。只对 YouTube 生效。 */
+  sponsorblock: 'off' | 'mark' | 'remove'
   /**
    * 下载后执行命令（ROADMAP §F16）：`--exec`。留空 = 不执行。
    * ⚠️ 会以本机权限执行，界面必须做安全确认。
