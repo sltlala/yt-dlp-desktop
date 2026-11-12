@@ -946,7 +946,7 @@ const templateWarning = computed(() => {
             <input v-model="s.browserPush" type="checkbox" />
             <span>
               启用本机接收端口
-              <em>允许浏览器扩展把当前页链接一键推给应用；只监听 127.0.0.1，本机外无法访问</em>
+              <em>允许浏览器扩展把当前页链接一键推给应用；只监听 127.0.0.1，且网页无法冒充扩展</em>
             </span>
           </label>
           <p class="note">
