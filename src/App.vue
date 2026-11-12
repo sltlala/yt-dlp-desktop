@@ -7,7 +7,7 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import type { SettingsTab } from './types'
 import { useVirtualList } from './composables/useVirtualList'
 import { fmtBytes, fmtSpeed, shortenPath } from './utils'
-import { api, isTauri } from './ipc'
+import { api, isTauri, type AfterAllMode, type AfterAllStatus } from './ipc'
 import { SHORTCUT_HELP, shortcutFor } from './shortcuts'
 import type { Task } from './types'
 
@@ -266,6 +266,20 @@ async function onShortcut(e: KeyboardEvent) {
 onMounted(() => document.addEventListener('keydown', onShortcut))
 onUnmounted(() => document.removeEventListener('keydown', onShortcut))
 
+/* ───────────────── 全部完成后睡眠 / 关机 ───────────────── */
+const afterAll = ref<AfterAllStatus>({ mode: 'none', countdown: null })
+let unAfterAll: (() => void) | null = null
+onMounted(async () => {
+  afterAll.value = await api.getAfterAll()
+  unAfterAll = await api.onAfterAll((s) => (afterAll.value = s))
+})
+onUnmounted(() => unAfterAll?.())
+
+async function setAfterAll(mode: AfterAllMode) {
+  afterAll.value = await api.setAfterAll(mode)
+}
+const afterAllVerb = computed(() => (afterAll.value.mode === 'shutdown' ? '关机' : '睡眠'))
+
 /* ───────────────── 剪贴板监听（ROADMAP §F4）─────────────────
  *
  * 复制一个链接就弹「要下载吗」气泡。默认关（`watchClipboard`），
@@ -477,6 +491,14 @@ watch(
           <button class="btn sm primary" @click="openSettings('download')">去下载</button>
         </div>
 
+        <div v-if="afterAll.countdown != null" class="disk-banner">
+          <span class="db-icon">⏰</span>
+          <span class="db-text">
+            全部下载完成，{{ afterAll.countdown }} 秒后{{ afterAllVerb }}
+          </span>
+          <button class="btn sm" @click="setAfterAll('none')">取消</button>
+        </div>
+
         <div ref="listWrap" class="list-wrap">
           <div v-if="shown.length === 0" class="empty">
             <div class="empty-icon">⬇</div>
@@ -514,6 +536,18 @@ watch(
             <span>已完成 {{ store.counts.completed }}</span>
             <span v-if="store.counts.failed" class="sep">·</span>
             <span v-if="store.counts.failed" class="err">失败 {{ store.counts.failed }}</span>
+            <span class="sep">·</span>
+            <select
+              class="sb-after"
+              :class="{ on: afterAll.mode !== 'none' }"
+              :value="afterAll.mode"
+              title="只对本次运行有效，执行一次后自动恢复为「无」"
+              @change="setAfterAll(($event.target as HTMLSelectElement).value as AfterAllMode)"
+            >
+              <option value="none">完成后：无操作</option>
+              <option value="sleep">完成后：睡眠</option>
+              <option value="shutdown">完成后：关机</option>
+            </select>
             <span class="sep">·</span>
             <span class="sb-keys" :title="shortcutTitle">快捷键</span>
           </div>
@@ -900,6 +934,18 @@ watch(
 }
 .sep {
   opacity: 0.5;
+}
+.sb-after {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.sb-after.on {
+  color: var(--warn);
+  font-weight: 600;
 }
 .sb-keys {
   cursor: help;

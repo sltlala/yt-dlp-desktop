@@ -31,6 +31,13 @@ type Listener = (tasks: Task[]) => void
 type PatchListener = (task: Task) => void
 type ProgressListener = (p: ProgressPatch) => void
 
+export type AfterAllMode = 'none' | 'sleep' | 'shutdown'
+export interface AfterAllStatus {
+  mode: AfterAllMode
+  /** 倒计时剩余秒数；null = 没在倒计时。 */
+  countdown: number | null
+}
+
 /** 进度专用增量：只带进度字段，最高频的事件不必传整个任务。 */
 export interface ProgressPatch {
   id: string
@@ -84,6 +91,11 @@ const tauriBackend = {
   onPatch: (l: PatchListener) => listen<Task>('task://patch', (e) => l(e.payload)),
   onProgress: (l: ProgressListener) =>
     listen<ProgressPatch>('task://progress', (e) => l(e.payload)),
+  /** 「全部完成后睡眠 / 关机」：只在本次运行有效，触发一次后自动复位。 */
+  getAfterAll: () => invoke<AfterAllStatus>('get_after_all'),
+  setAfterAll: (mode: AfterAllMode) => invoke<AfterAllStatus>('set_after_all', { mode }),
+  onAfterAll: (l: (s: AfterAllStatus) => void) =>
+    listen<AfterAllStatus>('afterall://status', (e) => l(e.payload)),
   addUrl: (url: string) => invoke<Task>('add_url', { url }),
   /** 批量添加（多行粘贴 / 拖入列表）。返回成功条数与失败明细（ROADMAP §F3）。 */
   addUrls: (urls: string[]) =>
@@ -524,6 +536,14 @@ class MockBackend {
     this.emit()
   }
 
+  /** 演示模式不会真的关机，也不倒计时，只记住选项。 */
+  afterAll: AfterAllStatus = { mode: 'none', countdown: null }
+
+  async setAfterAll(mode: AfterAllMode): Promise<AfterAllStatus> {
+    this.afterAll = { mode, countdown: null }
+    return this.afterAll
+  }
+
   async prioritize(id: string): Promise<boolean> {
     const t = this.tasks.find((x) => x.id === id)
     if (!t || !['pending', 'queued'].includes(t.state)) return false
@@ -876,6 +896,9 @@ export const api = isTauri()
       onChange: (l: Listener) => Promise.resolve(mock().onChange(l)),
       onPatch: (l: PatchListener) => Promise.resolve(mock().onPatch(l)),
       onProgress: (l: ProgressListener) => Promise.resolve(mock().onProgress(l)),
+      getAfterAll: () => Promise.resolve(mock().afterAll),
+      setAfterAll: (mode: AfterAllMode) => mock().setAfterAll(mode),
+      onAfterAll: (_l: (s: AfterAllStatus) => void) => Promise.resolve(() => {}),
       addUrl: (url: string) => mock().addUrl(url),
       addUrls: (urls: string[]) => mock().addUrls(urls),
       pause: (id: string) => mock().pause(id),

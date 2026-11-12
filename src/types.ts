@@ -265,6 +265,8 @@ export interface Settings {
   splitChapters: boolean
   /** SponsorBlock：标成章节，或剪掉赞助 / 自我推广 / 求关注片段。只对 YouTube 生效。 */
   sponsorblock: 'off' | 'mark' | 'remove'
+  /** 点关闭按钮时只隐藏到托盘，下载继续。 */
+  closeToTray: boolean
   /**
    * 下载后执行命令（ROADMAP §F16）：`--exec`。留空 = 不执行。
    * ⚠️ 会以本机权限执行，界面必须做安全确认。

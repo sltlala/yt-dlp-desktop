@@ -955,6 +955,12 @@ const templateWarning = computed(() => {
             </label>
           </div>
 
+          <h3>窗口</h3>
+          <label class="check">
+            <input v-model="s.closeToTray" type="checkbox" />
+            <span>点关闭按钮时最小化到托盘，下载在后台继续（右键托盘图标可退出）</span>
+          </label>
+
           <h3>通知</h3>
           <label class="check">
             <input v-model="s.notifyOnComplete" type="checkbox" />

@@ -266,6 +266,7 @@ export const defaultSettings: Settings = {
   impersonate: false,
   splitChapters: false,
   sponsorblock: 'off',
+  closeToTray: true,
   execCommand: '',
   notifyOnComplete: true,
   notifyOnFailure: true,

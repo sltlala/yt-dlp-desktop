@@ -3,6 +3,7 @@
 //! 设计上刻意保持「薄」：所有参数构造与输出解析都在 `ytdlp-core` 里，
 //! 这里只负责进程生命周期、持久化与前后端桥接。
 
+mod afterall;
 mod clipboard;
 mod cookies;
 mod ffmpeg;
@@ -17,6 +18,7 @@ mod state;
 mod store;
 mod sysproxy;
 mod text;
+mod tray;
 mod update;
 
 use serde_json::{json, Value};
@@ -84,6 +86,8 @@ fn default_settings() -> Value {
         "splitChapters": false,
         // SponsorBlock：off / mark（标成章节）/ remove（剪掉赞助等片段）。只对 YouTube 生效。
         "sponsorblock": "off",
+        // 点关闭按钮时只隐藏到托盘，下载继续
+        "closeToTray": true,
         // ── 下载后动作（ROADMAP §F16）──
         // 完成后执行的命令（--exec）。留空 = 不执行。
         // ⚠️ 会以本机权限执行，界面必须做安全确认，绝不静默启用。
@@ -1455,6 +1459,12 @@ pub fn run() {
             // 浏览器扩展一键推送（ROADMAP §F19）：本机回环端口接收扩展发来的 URL。
             push::spawn(app.handle().clone());
 
+            app.manage(afterall::AfterAll::default());
+            afterall::spawn(app.handle().clone());
+            if let Err(e) = tray::init(app.handle()) {
+                logfile::error(format!("创建托盘图标失败：{e}"));
+            }
+
             // 后台节流落库。
             //
             // 进度更新频率很高（实测每秒数条），**不能每次变更都写库**；
@@ -1474,7 +1484,10 @@ pub fn run() {
             });
             Ok(())
         })
+        .on_window_event(tray::on_window_event)
         .invoke_handler(tauri::generate_handler![
+            afterall::get_after_all,
+            afterall::set_after_all,
             get_settings,
             save_settings,
             list_tasks,
