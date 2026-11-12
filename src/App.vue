@@ -8,6 +8,8 @@ import type { SettingsTab } from './types'
 import { useVirtualList } from './composables/useVirtualList'
 import { fmtBytes, fmtSpeed, shortenPath } from './utils'
 import { api, isTauri } from './ipc'
+import { SHORTCUT_HELP, shortcutFor } from './shortcuts'
+import type { Task } from './types'
 
 const store = useTaskStore()
 const query = ref('')
@@ -214,6 +216,56 @@ function reload() {
   window.location.reload()
 }
 
+/* ───────────────── 快捷键 ───────────────── */
+
+const addBar = ref<InstanceType<typeof AddUrlBar> | null>(null)
+const shortcutTitle = SHORTCUT_HELP.map(([k, d]) => `${k}　${d}`).join('\n')
+
+/** 快捷键作用的任务：多选时是所选，否则是展开的那一条。 */
+function shortcutTargets(): Task[] {
+  const ids = store.selectMode ? [...store.selected] : store.expanded ? [store.expanded] : []
+  return ids.map((id) => store.tasks.find((t) => t.id === id)).filter((t): t is Task => !!t)
+}
+
+const PAUSABLE = ['downloading', 'postprocessing', 'pending', 'queued', 'probing']
+
+async function onShortcut(e: KeyboardEvent) {
+  if (view.value !== 'tasks') return
+  const action = shortcutFor(e, !!document.querySelector('.mask'))
+  if (!action) return
+  e.preventDefault()
+  switch (action) {
+    case 'paste': {
+      const text = (await api.readClipboard().catch(() => '')).trim()
+      if (!text) return
+      if (addBar.value) await addBar.value.addBulk(text)
+      else await store.addUrls(text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean))
+      break
+    }
+    case 'togglePause':
+      for (const t of shortcutTargets()) {
+        if (PAUSABLE.includes(t.state)) await store.pause(t.id)
+        else if (t.state === 'paused' || t.state === 'failed') await store.resume(t.id)
+      }
+      break
+    case 'remove':
+      if (store.selectMode) await removeSelected()
+      else if (store.expanded) await store.removeRecord(store.expanded)
+      break
+    case 'selectAll':
+      if (!store.selectMode) enterSelect()
+      store.selectAll(shownKeys.value)
+      break
+    case 'escape':
+      if (store.selectMode) store.clearSelection()
+      else store.expanded = null
+      break
+  }
+}
+
+onMounted(() => document.addEventListener('keydown', onShortcut))
+onUnmounted(() => document.removeEventListener('keydown', onShortcut))
+
 /* ───────────────── 剪贴板监听（ROADMAP §F4）─────────────────
  *
  * 复制一个链接就弹「要下载吗」气泡。默认关（`watchClipboard`），
@@ -393,7 +445,7 @@ watch(
           <button class="btn sm" @click="store.clearSelection()">完成</button>
         </div>
 
-        <AddUrlBar v-else />
+        <AddUrlBar v-else ref="addBar" />
 
         <!-- 错误必须显式呈现：静默的 Promise rejection 曾让功能完全无反应 -->
         <div v-if="store.lastError" class="err-banner">
@@ -462,6 +514,8 @@ watch(
             <span>已完成 {{ store.counts.completed }}</span>
             <span v-if="store.counts.failed" class="sep">·</span>
             <span v-if="store.counts.failed" class="err">失败 {{ store.counts.failed }}</span>
+            <span class="sep">·</span>
+            <span class="sb-keys" :title="shortcutTitle">快捷键</span>
           </div>
         </footer>
 
@@ -846,6 +900,10 @@ watch(
 }
 .sep {
   opacity: 0.5;
+}
+.sb-keys {
+  cursor: help;
+  border-bottom: 1px dotted currentColor;
 }
 .err {
   color: var(--err);

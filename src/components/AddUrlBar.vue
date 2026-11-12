@@ -34,6 +34,8 @@ async function addBulk(text: string) {
   }
 }
 
+defineExpose({ addBulk })
+
 async function submit() {
   if (!url.value.trim() || busy.value) return
   await addBulk(url.value)
